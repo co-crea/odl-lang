@@ -1,0 +1,40 @@
+# --- Python / Bytecode ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Environments / Poetry ---
+.venv/
+venv/
+ENV/
+.env
+
+# --- Build / Distribution ---
+dist/
+build/
+*.egg-info/
+
+# --- Testing / Reports ---
+.pytest_cache/
+.coverage
+htmlcov/
+nosetests.xml
+coverage.xml
+*.conch
+.hypothesis/
+
+# --- ODL Specific Test Outputs ---
+# テスト実行時に生成されるログおよび成果物フォルダを除外
+tests/integration/logs/
+tests/integration/artifacts/
+
+# --- IDE / Editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# --- OS ---
+Thumbs.db
+db.lock

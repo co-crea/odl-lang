@@ -1,0 +1,320 @@
+pac_code: cocrea-5130
+title: Master ODL for System Verification
+version: 1.0.0
+pac_type: TestPattern
+layer: domain
+domain: cocrea
+topic: Test
+sub_topic: GrandMasterCase
+
+overview:
+  purpose: |
+    ODLコンパイラおよび実行エンジン（Co-creation Engine）の挙動を網羅的に検証するための、標準テストケース集（Grand Master Case）を定義する。
+    パターンの展開、IDスタッキング、自動配線（Auto-Wiring）が仕様通りに行われるかを検証し、処理系の信頼性を担保することを目的とする。
+  target_audience: |
+    - ODL処理系（Compiler/Runtime）の実装・開発者
+    - ODL仕様の整合性を確認する QAエンジニア / アーキテクト
+  scope: |
+    基本プリミティブ（Worker, Dialogue）から、複合パターン（Generate_Team, Ensemble, Fan-out）、およびそれらのネスト構造までを網羅する。
+    特に、コンテキストの継承（Context Inheritance）と物理ID生成ルールの境界値テストに重点を置く。
+  value: |
+    組織OSの「カーネルパニック（予期せぬ停止や不整合）」を未然に防ぎ、定義された組織構造とプロセスが、計算機上で正確かつ決定論的に再現されることを保証する。
+
+index: |
+  ### テスト計画の整理
+
+  * **1_系：Primitives & Fixed Patterns (contentsなし)**
+      * 対象: `worker`, `dialogue`, `serial` (list), `parallel` (list), `generate_team` (validators list), `ensemble` (generators list)
+      * 特徴: プロパティとして **`contents` ブロックを持たない**もの。構造が静的。
+      * 狙い: 基本的なI/O、IDスタッキング、Wiringの検証。
+
+  * **2_系：Structural Patterns (contentsあり・単層)**
+      * 対象: `fan_out`, `loop`, `approval_gate`
+      * 特徴: プロパティとして **`contents: <Block>` を持つ**もの。
+      * 狙い: 「ある処理ブロック」をラップして制御する、高階関数的な挙動の検証。
+
+  * **3_系：Nested Structures (contentsの入れ子)**
+      * 対象: `loop` in `fan_out` など
+      * 特徴: `contents` の中にさらに `contents` を持つパターンが登場。
+      * 狙い: スコープ解決（変数の見え方）や、IDスタッキングが深くなった時の整合性検証。
+
+  * **9_系：Error Cases (コンパイルエラー)**
+      * 対象: 循環参照、前方参照違反、必須パラメータ欠落、`fan_out` in `fan_out` (制約違反) など。
+      * 備忘メモ: worker(mode=validate)の単独使用禁止（自動配線用の特殊なモードなので）
+
+case:
+  - id: 3_1_1
+    description: |
+      Nested Structure: Fan-out > Approval Gate > Worker
+      【シナリオ：中途採用の書類選考】
+      応募者リストに基づき並列展開し、各応募者に対して「面接官による評価」と「人事責任者による承認」を行う。
+      人事責任者がNGを出した場合（「もう少し深く掘り下げて」など）、面接官は評価シートを修正する。
+      
+      検証ポイント:
+      - ID Stacking: `Output#default/{$KEY}/v{$LOOP}`
+        (例: `評価シート#Candidate001/v1`)
+      - Context Injection: ループ内(Gate)のWorkerが、外側(Fan-out)の `$KEY` を参照できるか。
+    source_syntax:
+      fan_out:
+        source: 応募者リスト:Applicants2025
+        item_key: ApplicantID
+        strategy: parallel
+        contents:
+          approval_gate:
+            approver: HR_Manager
+            target: 評価シート
+            contents:
+              worker:
+                agent: Interviewer
+                inputs: 
+                  - 採用基準:HiringCriteria
+                  - 履歴書.__key # 応募者個人の履歴書データ
+                output: 評価シート
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          # 1. Iterator Setup
+          - iterator_init:
+              stack_path: root/serial_0/iterator_init_0
+              source: 応募者リスト:Applicants2025@stable
+              item_key: ApplicantID
+
+          # 2. Parallel Fan-out
+          - iterate:
+              stack_path: root/serial_0/iterate_1
+              strategy: parallel
+              contents:
+                # === Approval Gate Expansion (Inside Iterator) ===
+                serial:
+                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0
+                  children:
+                    - loop:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0
+                        count: 10
+                        break_on: success
+                        contents:
+                          serial:
+                            stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0
+                            children:
+                              # 1. Worker Execution (Interviewer)
+                              - worker:
+                                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0/worker_0
+                                  agent: Interviewer
+                                  mode: generate
+                                  inputs: 
+                                    - 採用基準:HiringCriteria@stable
+                                    - 履歴書.{$KEY}
+                                    # Feedback Injection (Previous Loop)
+                                    - 評価シート#default/{$KEY}/v{$LOOP-1}
+                                    - 評価シート__Review_HR_Manager#default/{$KEY}/v{$LOOP-1}
+                                  output: 評価シート#default/{$KEY}/v{$LOOP}
+
+                              # 2. Approval Approver (HR_Manager)
+                              - approver:
+                                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0/approver_1
+                                  agent: HR_Manager
+                                  inputs: 
+                                    # --- 1. Current Target ---
+                                    - 評価シート#default/{$KEY}/v{$LOOP}
+                                    # --- 2. History Context (Diff & Feedback) ---
+                                    - 評価シート#default/{$KEY}/v{$LOOP-1}
+                                    - 評価シート__Review_HR_Manager#default/{$KEY}/v{$LOOP-1}
+                                    # --- 3. Process Evidence (Audit Trail) ---
+                                    # --- 4. References (External Inputs) ---
+                                    - 採用基準:HiringCriteria@stable
+                                    - 履歴書.{$KEY}
+                                  output: 評価シート__Review_HR_Manager#default/{$KEY}/v{$LOOP}
+
+                    # 3. Scope Resolution (Unstack Loop -> Keep Key)
+                    - scope_resolve:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/scope_resolve_1
+                        target: 評価シート
+                        from_scope: loop
+                        strategy: take_latest_success
+                        map_to: 評価シート#default/{$KEY}
+
+  - id: 3_1_2
+    description: |
+      Nested Structure: Fan-out > Approval Gate > Serial(Ensemble -> Worker)
+      【シナリオ：地域別・店舗内装リニューアル計画】
+      
+      1. Fan-out: 全国の店舗ごとにプロセスを展開。
+      2. Approval Gate: 本社ブランド責任者(HQ_Director)が最終計画を承認。NGなら最初(Ensemble)からやり直し。
+      3. Serial Contents:
+         - Ensemble: 現地スタッフと店舗デザイナーが、地域性($KEY)を活かした「改装コンセプト案」を出し合い、店長(StoreMgr)が統合する。
+         - Worker: 建築士(Architect)が、統合されたコンセプトを元に「施工計画書」を書き起こす。
+      
+      検証ポイント:
+      - Complex Wiring: Gateのフィードバック（施工計画書へのダメ出し）が、
+        シリアルの先頭にあるEnsemble（コンセプト立案）に正しく注入されるか。
+        「施工計画がダメなのはコンセプトが悪いからだ」という手戻りをシミュレート。
+    source_syntax:
+      fan_out:
+        source: 店舗リスト:StoreList
+        item_key: StoreID
+        strategy: parallel
+        contents:
+          approval_gate:
+            approver: HQ_Director
+            target: 施工計画書 # Serialの最終成果物を承認対象とする
+            contents:
+              serial:
+                # Step 1: Concept Design (Ensemble)
+                - ensemble:
+                    generators: [LocalStaff, Designer]
+                    samples: 2
+                    consolidator: StoreMgr
+                    inputs: 
+                      - ブランド指針:BrandGuide
+                      - 店舗情報.__key # 店舗情報
+                    output: 改装コンセプト
+                
+                # Step 2: Blueprinting (Worker)
+                - worker:
+                    agent: Architect
+                    mode: generate
+                    inputs: 
+                      - 改装コンセプト # Step 1の成果物
+                    output: 施工計画書
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          # 1. Iterator Setup
+          - iterator_init:
+              stack_path: root/serial_0/iterator_init_0
+              source: 店舗リスト:StoreList@stable
+              item_key: StoreID
+
+          # 2. Parallel Fan-out
+          - iterate:
+              stack_path: root/serial_0/iterate_1
+              strategy: parallel
+              contents:
+                # === Approval Gate Expansion ===
+                serial:
+                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0
+                  children:
+                    - loop:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0
+                        count: 10
+                        break_on: success
+                        contents:
+                          serial:
+                            stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0
+                            children:
+                              - serial:
+                                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0/serial_0
+                                  children:
+                                    # --- Step 1: Ensemble Expansion (Inside Gate Loop) ---
+                                    - serial:
+                                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0
+                                        children:
+                                          # Diverge
+                                          - parallel:
+                                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0/parallel_0
+                                              children:
+                                                - worker:
+                                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0/parallel_0/worker_0
+                                                    agent: LocalStaff
+                                                    mode: generate
+                                                    inputs:
+                                                      - ブランド指針:BrandGuide@stable
+                                                      - 店舗情報.{$KEY}
+                                                      # Feedback Injection: 
+                                                      # ターゲット(施工計画書)へのFBを、最上流(コンセプト)で受け取る
+                                                      - 施工計画書__Review_HQ_Director#default/{$KEY}/v{$LOOP-1}
+                                                      # Self-Reference
+                                                      - _改装コンセプト#default/{$KEY}/v{$LOOP-1}/LocalStaff/1
+                                                    output: _改装コンセプト#default/{$KEY}/v{$LOOP}/LocalStaff/1
+                                                - worker:
+                                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0/parallel_0/worker_1
+                                                    agent: LocalStaff
+                                                    mode: generate
+                                                    inputs:
+                                                      - ブランド指針:BrandGuide@stable
+                                                      - 店舗情報.{$KEY}
+                                                      - 施工計画書__Review_HQ_Director#default/{$KEY}/v{$LOOP-1}
+                                                      # Self-Reference
+                                                      - _改装コンセプト#default/{$KEY}/v{$LOOP-1}/LocalStaff/2
+                                                    output: _改装コンセプト#default/{$KEY}/v{$LOOP}/LocalStaff/2
+                                                - worker:
+                                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0/parallel_0/worker_2
+                                                    agent: Designer
+                                                    mode: generate
+                                                    inputs:
+                                                      - ブランド指針:BrandGuide@stable
+                                                      - 店舗情報.{$KEY}
+                                                      - 施工計画書__Review_HQ_Director#default/{$KEY}/v{$LOOP-1}
+                                                      # Self-Reference
+                                                      - _改装コンセプト#default/{$KEY}/v{$LOOP-1}/Designer/1
+                                                    output: _改装コンセプト#default/{$KEY}/v{$LOOP}/Designer/1
+                                                - worker:
+                                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0/parallel_0/worker_3
+                                                    agent: Designer
+                                                    mode: generate
+                                                    inputs:
+                                                      - ブランド指針:BrandGuide@stable
+                                                      - 店舗情報.{$KEY}
+                                                      - 施工計画書__Review_HQ_Director#default/{$KEY}/v{$LOOP-1}
+                                                      # Self-Reference
+                                                      - _改装コンセプト#default/{$KEY}/v{$LOOP-1}/Designer/2
+                                                    output: _改装コンセプト#default/{$KEY}/v{$LOOP}/Designer/2
+                                          
+                                          # Converge
+                                          - worker:
+                                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0/worker_1
+                                              agent: StoreMgr
+                                              mode: generate
+                                              inputs:
+                                                - ブランド指針:BrandGuide@stable
+                                                - 店舗情報.{$KEY}
+                                                # Deep Collection
+                                                - _改装コンセプト#default/{$KEY}/v{$LOOP}/LocalStaff/1
+                                                - _改装コンセプト#default/{$KEY}/v{$LOOP}/LocalStaff/2
+                                                - _改装コンセプト#default/{$KEY}/v{$LOOP}/Designer/1
+                                                - _改装コンセプト#default/{$KEY}/v{$LOOP}/Designer/2
+                                                # Consolidator also sees the feedback
+                                                - 施工計画書__Review_HQ_Director#default/{$KEY}/v{$LOOP-1}
+                                                # Self-Reference
+                                                - 改装コンセプト#default/{$KEY}/v{$LOOP-1}
+                                              output: 改装コンセプト#default/{$KEY}/v{$LOOP}
+
+                                    # --- Step 2: Worker Expansion (Inside Gate Loop) ---
+                                    - worker:
+                                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/worker_1
+                                        agent: Architect
+                                        mode: generate
+                                        inputs:
+                                          - 改装コンセプト#default/{$KEY}/v{$LOOP}
+                                          # Consolidator also sees the feedback
+                                          - 施工計画書__Review_HQ_Director#default/{$KEY}/v{$LOOP-1}
+                                          # Self-Reference
+                                          - 施工計画書#default/{$KEY}/v{$LOOP-1}
+                                        output: 施工計画書#default/{$KEY}/v{$LOOP}
+
+                              # --- Gate Approver ---
+                              - approver:
+                                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0/approver_1
+                                  agent: HQ_Director
+                                  inputs:
+                                    # --- 1. Current Target ---
+                                    - 施工計画書#default/{$KEY}/v{$LOOP}
+                                    # --- 2. History Context (Diff & Feedback) ---
+                                    - 施工計画書#default/{$KEY}/v{$LOOP-1}
+                                    - 施工計画書__Review_HQ_Director#default/{$KEY}/v{$LOOP-1}
+                                    # --- 3. Process Evidence (Audit Trail) ---
+                                    - 改装コンセプト#default/{$KEY}/v{$LOOP}
+                                    # --- 4. References (External Inputs) ---
+                                    - ブランド指針:BrandGuide@stable
+                                    - 店舗情報.{$KEY}
+                                  output: 施工計画書__Review_HQ_Director#default/{$KEY}/v{$LOOP}
+
+                    # 3. Scope Resolve
+                    - scope_resolve:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/scope_resolve_1
+                        target: 施工計画書
+                        from_scope: loop
+                        strategy: take_latest_success
+                        map_to: 施工計画書#default/{$KEY}

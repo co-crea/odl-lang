@@ -1,0 +1,1495 @@
+pac_code: cocrea-5110
+title: Master ODL for System Verification
+version: 1.0.0
+pac_type: TestPattern
+layer: domain
+domain: cocrea
+topic: Test
+sub_topic: GrandMasterCase
+
+overview:
+  purpose: |
+    ODLコンパイラおよび実行エンジン（Co-creation Engine）の挙動を網羅的に検証するための、標準テストケース集（Grand Master Case）を定義する。
+    パターンの展開、IDスタッキング、自動配線（Auto-Wiring）が仕様通りに行われるかを検証し、処理系の信頼性を担保することを目的とする。
+  target_audience: |
+    - ODL処理系（Compiler/Runtime）の実装・開発者
+    - ODL仕様の整合性を確認する QAエンジニア / アーキテクト
+  scope: |
+    基本プリミティブ（Worker, Dialogue）から、複合パターン（Generate_Team, Ensemble, Fan-out）、およびそれらのネスト構造までを網羅する。
+    特に、コンテキストの継承（Context Inheritance）と物理ID生成ルールの境界値テストに重点を置く。
+  value: |
+    組織OSの「カーネルパニック（予期せぬ停止や不整合）」を未然に防ぎ、定義された組織構造とプロセスが、計算機上で正確かつ決定論的に再現されることを保証する。
+
+index: |
+  ### テスト計画の整理
+
+  * **1_系：Primitives & Fixed Patterns (contentsなし)**
+      * 対象: `worker`, `dialogue`, `serial` (list), `parallel` (list), `generate_team` (validators list), `ensemble` (generators list)
+      * 特徴: プロパティとして **`contents` ブロックを持たない**もの。構造が静的。
+      * 狙い: 基本的なI/O、IDスタッキング、Wiringの検証。
+
+  * **2_系：Structural Patterns (contentsあり・単層)**
+      * 対象: `fan_out`, `loop`, `approval_gate`
+      * 特徴: プロパティとして **`contents: <Block>` を持つ**もの。
+      * 狙い: 「ある処理ブロック」をラップして制御する、高階関数的な挙動の検証。
+
+  * **3_系：Nested Structures (contentsの入れ子)**
+      * 対象: `loop` in `fan_out` など
+      * 特徴: `contents` の中にさらに `contents` を持つパターンが登場。
+      * 狙い: スコープ解決（変数の見え方）や、IDスタッキングが深くなった時の整合性検証。
+
+  * **9_系：Error Cases (コンパイルエラー)**
+      * 対象: 循環参照、前方参照違反、必須パラメータ欠落、`fan_out` in `fan_out` (制約違反) など。
+      * 備忘メモ: worker(mode=validate)の単独使用禁止（自動配線用の特殊なモードなので）
+      * 備忘メモ: doc_identifierに「_」や「#」の使用を禁止する必要あり
+
+case:
+  - id: 1_1_1
+    description: |
+      単体dialogue（not under serial）
+      外部文書(@省略/@指定)とジョブ文書の混在
+    source_syntax:
+      dialogue:
+        agent: ProjectArchitect
+        inputs: 
+          - 全社規定:Rules01
+          - 市場レポート:Mkt05@latest
+        output: プロジェクト定義書
+    expansion_ir:
+      dialogue:
+        stack_path: root/dialogue_0
+        agent: ProjectArchitect
+        inputs: 
+          - 全社規定:Rules01@stable
+          - 市場レポート:Mkt05@latest
+        output: プロジェクト定義書#default
+
+  - id: 1_2_1
+    description: |
+      単体worker（not under serial）
+      外部文書(@省略/@指定)とジョブ文書の混在
+    source_syntax:
+      worker:
+        agent: ProjectArchitect
+        mode: generate
+        inputs: 
+          - 全社規定:Rules01
+          - 市場レポート:Mkt05@latest
+        output: プロジェクト定義書
+    expansion_ir:
+      worker:
+        stack_path: root/worker_0
+        agent: ProjectArchitect
+        mode: generate
+        inputs: 
+          - 全社規定:Rules01@stable
+          - 市場レポート:Mkt05@latest
+        output: プロジェクト定義書#default
+
+  - id: 1_3_1
+    description: |
+      単体generate_team（not under serial）
+      外部文書(@省略/@指定)とジョブ文書の混在
+      単一validator(refs省略)
+    source_syntax:
+      generate_team:
+        generator: ProjectArchitect
+        loop: 3
+        briefing:
+          test: test_message
+        inputs: 
+          - 全社規定:Rules01
+          - 市場レポート:Mkt05@latest
+        output: プロジェクト定義書
+        validators: [SecuritySpecialist]
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          - loop:
+              stack_path: root/serial_0/loop_0
+              count: 3
+              break_on: success
+              contents:
+                serial:
+                  stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0
+                  children:
+                    - worker:
+                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/worker_0
+                        agent: ProjectArchitect
+                        mode: generate
+                        test: test_message
+                        inputs: 
+                          - 全社規定:Rules01@stable
+                          - 市場レポート:Mkt05@latest
+                          - プロジェクト定義書#default/v{$LOOP-1}
+                          - プロジェクト定義書__Review_SecuritySpecialist#default/v{$LOOP-1}
+                        output: プロジェクト定義書#default/v{$LOOP}
+                    - parallel:
+                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1
+                        children:
+                          - worker:
+                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1/worker_0
+                              agent: SecuritySpecialist
+                              mode: validate
+                              test: test_message
+                              inputs:
+                                - 全社規定:Rules01@stable
+                                - 市場レポート:Mkt05@latest
+                                - プロジェクト定義書#default/v{$LOOP}
+                              output: プロジェクト定義書__Review_SecuritySpecialist#default/v{$LOOP}
+          - scope_resolve:
+              stack_path: root/serial_0/scope_resolve_1
+              target: プロジェクト定義書
+              from_scope: loop
+              strategy: take_latest_success
+              map_to: プロジェクト定義書#default
+
+  - id: 1_3_2
+    description: |
+      単体generate_team（not under serial）
+      外部文書(@省略/@指定)とジョブ文書の混在
+      複数validator(refs省略)
+    source_syntax:
+      generate_team:
+        briefing:
+          test: test_message
+          mode: update_mode_outer #これは無視される
+          ProjectArchitect: #一致するworkerへのみ渡される
+            template: T01A
+            deep_think: true
+            mode: update_mode_inner #これは無視される
+          TechnicalLead:
+            template: T01B
+            deep_think: true
+        generator: ProjectArchitect
+        loop: 3
+        inputs: 
+          - 全社規定:Rules01
+          - 市場レポート:Mkt05@latest
+        output: プロジェクト定義書
+        validators: [SecuritySpecialist,TechnicalLead]
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          - loop:
+              stack_path: root/serial_0/loop_0
+              count: 3
+              break_on: success
+              contents:
+                serial:
+                  stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0
+                  children:
+                    - worker:
+                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/worker_0
+                        agent: ProjectArchitect
+                        mode: generate
+                        test: test_message
+                        template: T01A
+                        deep_think: true
+                        inputs: 
+                          - 全社規定:Rules01@stable
+                          - 市場レポート:Mkt05@latest
+                          - プロジェクト定義書#default/v{$LOOP-1}
+                          - プロジェクト定義書__Review_SecuritySpecialist#default/v{$LOOP-1}
+                          - プロジェクト定義書__Review_TechnicalLead#default/v{$LOOP-1}
+                        output: プロジェクト定義書#default/v{$LOOP}
+                    - parallel:
+                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1
+                        children:
+                          - worker:
+                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1/worker_0
+                              agent: SecuritySpecialist
+                              mode: validate
+                              test: test_message
+                              inputs:
+                                - 全社規定:Rules01@stable
+                                - 市場レポート:Mkt05@latest
+                                - プロジェクト定義書#default/v{$LOOP}
+                              output: プロジェクト定義書__Review_SecuritySpecialist#default/v{$LOOP}
+                          - worker:
+                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1/worker_1
+                              agent: TechnicalLead
+                              mode: validate
+                              test: test_message
+                              template: T01B
+                              deep_think: true
+                              inputs:
+                                - 全社規定:Rules01@stable
+                                - 市場レポート:Mkt05@latest
+                                - プロジェクト定義書#default/v{$LOOP}
+                              output: プロジェクト定義書__Review_TechnicalLead#default/v{$LOOP}
+          - scope_resolve:
+              stack_path: root/serial_0/scope_resolve_1
+              target: プロジェクト定義書
+              from_scope: loop
+              strategy: take_latest_success
+              map_to: プロジェクト定義書#default
+
+  - id: 1_3_3
+    description: |
+      単体generate_team（not under serial）
+      外部文書(@省略/@指定)とジョブ文書の混在
+      複数validator(refs指定)
+    source_syntax:
+      generate_team:
+        generator: ProjectArchitect
+        loop: 3
+        inputs: 
+          - 全社規定:Rules01
+          - 市場レポート:Mkt05@latest
+        output: プロジェクト定義書
+        validators:
+          - agents: [SecuritySpecialist, TechnicalLead]
+            refs:
+              - 全社規定:Rules01
+              - 市場レポート:Mkt05@latest
+          - agents: [ProductOwner]
+            refs:
+              - 全社規定:Rules01
+              - 事業戦略:SecA@latest
+              - 市場レポート:Mkt05@latest
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          - loop:
+              stack_path: root/serial_0/loop_0
+              count: 3
+              break_on: success
+              contents:
+                serial:
+                  stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0
+                  children:
+                    - worker:
+                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/worker_0
+                        agent: ProjectArchitect
+                        mode: generate
+                        inputs: 
+                          - 全社規定:Rules01@stable
+                          - 市場レポート:Mkt05@latest
+                          - プロジェクト定義書#default/v{$LOOP-1}
+                          - プロジェクト定義書__Review_SecuritySpecialist#default/v{$LOOP-1}
+                          - プロジェクト定義書__Review_TechnicalLead#default/v{$LOOP-1}
+                          - プロジェクト定義書__Review_ProductOwner#default/v{$LOOP-1}
+                        output: プロジェクト定義書#default/v{$LOOP}
+                    - parallel:
+                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1
+                        children:
+                          - worker:
+                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1/worker_0
+                              agent: SecuritySpecialist
+                              mode: validate
+                              inputs:
+                                - 全社規定:Rules01@stable
+                                - 市場レポート:Mkt05@latest
+                                - プロジェクト定義書#default/v{$LOOP}
+                              output: プロジェクト定義書__Review_SecuritySpecialist#default/v{$LOOP}
+                          - worker:
+                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1/worker_1
+                              agent: TechnicalLead
+                              mode: validate
+                              inputs:
+                                - 全社規定:Rules01@stable
+                                - 市場レポート:Mkt05@latest
+                                - プロジェクト定義書#default/v{$LOOP}
+                              output: プロジェクト定義書__Review_TechnicalLead#default/v{$LOOP}
+                          - worker:
+                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1/worker_2
+                              agent: ProductOwner
+                              mode: validate
+                              inputs:
+                                - 全社規定:Rules01@stable
+                                - 事業戦略:SecA@latest
+                                - 市場レポート:Mkt05@latest
+                                - プロジェクト定義書#default/v{$LOOP}
+                              output: プロジェクト定義書__Review_ProductOwner#default/v{$LOOP}
+          - scope_resolve:
+              stack_path: root/serial_0/scope_resolve_1
+              target: プロジェクト定義書
+              from_scope: loop
+              strategy: take_latest_success
+              map_to: プロジェクト定義書#default
+
+  - id: 1_3_4
+    description: |
+      単体generate_team（not under serial）
+      外部文書(@省略/@指定)とジョブ文書の混在
+      ユーザーが物理IDを明示指定した場合のIDスタッキングと解決(Unstack)
+      複数validator(refs省略)
+    source_syntax:
+      generate_team:
+        generator: ProjectArchitect
+        loop: 3
+        inputs: 
+          - 全社規定:Rules01
+          - 市場レポート:Mkt05@latest
+        output: プロジェクト定義書#Scope1
+        validators: [SecuritySpecialist,TechnicalLead]
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          - loop:
+              stack_path: root/serial_0/loop_0
+              count: 3
+              break_on: success
+              contents:
+                serial:
+                  stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0
+                  children:
+                    - worker:
+                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/worker_0
+                        agent: ProjectArchitect
+                        mode: generate
+                        inputs: 
+                          - 全社規定:Rules01@stable
+                          - 市場レポート:Mkt05@latest
+                          - プロジェクト定義書#Scope1/v{$LOOP-1}
+                          - プロジェクト定義書__Review_SecuritySpecialist#Scope1/v{$LOOP-1}
+                          - プロジェクト定義書__Review_TechnicalLead#Scope1/v{$LOOP-1}
+                        output: プロジェクト定義書#Scope1/v{$LOOP}
+                    - parallel:
+                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1
+                        children:
+                          - worker:
+                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1/worker_0
+                              agent: SecuritySpecialist
+                              mode: validate
+                              inputs:
+                                - 全社規定:Rules01@stable
+                                - 市場レポート:Mkt05@latest
+                                - プロジェクト定義書#Scope1/v{$LOOP}
+                              output: プロジェクト定義書__Review_SecuritySpecialist#Scope1/v{$LOOP}
+                          - worker:
+                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1/worker_1
+                              agent: TechnicalLead
+                              mode: validate
+                              inputs:
+                                - 全社規定:Rules01@stable
+                                - 市場レポート:Mkt05@latest
+                                - プロジェクト定義書#Scope1/v{$LOOP}
+                              output: プロジェクト定義書__Review_TechnicalLead#Scope1/v{$LOOP}
+          - scope_resolve:
+              stack_path: root/serial_0/scope_resolve_1
+              target: プロジェクト定義書
+              from_scope: loop
+              strategy: take_latest_success
+              map_to: プロジェクト定義書#Scope1
+
+  - id: 1_4_1
+    description: |
+      単体ensemble（not under serial）
+      並列生成（Diverge）と集約（Converge）
+      IDスタッキング: {OutputName}#{AgentID}/{Index}
+    source_syntax:
+      ensemble:
+        generators: [PlannerA, VeteranB]
+        samples: 2
+        consolidator: ProdManager
+        inputs: 
+          - 市場トレンド:Trend2025@latest
+        output: アイデアリスト
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          # 1. Diverge (発散): Generator x Samples 分の並列実行
+          - parallel:
+              stack_path: root/serial_0/parallel_0
+              children:
+                # PlannerA の 2案
+                - worker:
+                    stack_path: root/serial_0/parallel_0/worker_0
+                    agent: PlannerA
+                    mode: generate
+                    inputs: [市場トレンド:Trend2025@latest]
+                    output: _アイデアリスト#default/PlannerA/1
+                - worker:
+                    stack_path: root/serial_0/parallel_0/worker_1
+                    agent: PlannerA
+                    mode: generate
+                    inputs: [市場トレンド:Trend2025@latest]
+                    output: _アイデアリスト#default/PlannerA/2
+                # VeteranB の 2案
+                - worker:
+                    stack_path: root/serial_0/parallel_0/worker_2
+                    agent: VeteranB
+                    mode: generate
+                    inputs: [市場トレンド:Trend2025@latest]
+                    output: _アイデアリスト#default/VeteranB/1
+                - worker:
+                    stack_path: root/serial_0/parallel_0/worker_3
+                    agent: VeteranB
+                    mode: generate
+                    inputs: [市場トレンド:Trend2025@latest]
+                    output: _アイデアリスト#default/VeteranB/2
+
+          # 2. Converge (収束): 全成果物をInputに注入して集約
+          - worker:
+              stack_path: root/serial_0/worker_1
+              agent: ProdManager
+              mode: generate # 統合も「生成」の一種
+              inputs:
+                - 市場トレンド:Trend2025@latest
+                - _アイデアリスト#default/PlannerA/1
+                - _アイデアリスト#default/PlannerA/2
+                - _アイデアリスト#default/VeteranB/1
+                - _アイデアリスト#default/VeteranB/2
+              output: アイデアリスト#default
+
+  - id: 1_4_2
+    description: |
+      単体ensemble（not under serial）
+      並列生成（Diverge）と集約（Converge）
+      ユーザーが物理IDを明示指定した場合のIDスタッキングと解決(Unstack)
+      IDスタッキング: {OutputName}#{AgentID}/{Index}
+    source_syntax:
+      ensemble:
+        generators: [PlannerA, VeteranB]
+        samples: 2
+        consolidator: ProdManager
+        inputs: 
+          - 市場トレンド:Trend2025@latest
+        output: アイデアリスト#part1
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          # 1. Diverge (発散): Generator x Samples 分の並列実行
+          - parallel:
+              stack_path: root/serial_0/parallel_0
+              children:
+                # PlannerA の 2案
+                - worker:
+                    stack_path: root/serial_0/parallel_0/worker_0
+                    agent: PlannerA
+                    mode: generate
+                    inputs: [市場トレンド:Trend2025@latest]
+                    output: _アイデアリスト#part1/PlannerA/1
+                - worker:
+                    stack_path: root/serial_0/parallel_0/worker_1
+                    agent: PlannerA
+                    mode: generate
+                    inputs: [市場トレンド:Trend2025@latest]
+                    output: _アイデアリスト#part1/PlannerA/2
+                # VeteranB の 2案
+                - worker:
+                    stack_path: root/serial_0/parallel_0/worker_2
+                    agent: VeteranB
+                    mode: generate
+                    inputs: [市場トレンド:Trend2025@latest]
+                    output: _アイデアリスト#part1/VeteranB/1
+                - worker:
+                    stack_path: root/serial_0/parallel_0/worker_3
+                    agent: VeteranB
+                    mode: generate
+                    inputs: [市場トレンド:Trend2025@latest]
+                    output: _アイデアリスト#part1/VeteranB/2
+
+          # 2. Converge (収束): 全成果物をInputに注入して集約
+          - worker:
+              stack_path: root/serial_0/worker_1
+              agent: ProdManager
+              mode: generate # 統合も「生成」の一種
+              inputs:
+                - 市場トレンド:Trend2025@latest
+                - _アイデアリスト#part1/PlannerA/1
+                - _アイデアリスト#part1/PlannerA/2
+                - _アイデアリスト#part1/VeteranB/1
+                - _アイデアリスト#part1/VeteranB/2
+              output: アイデアリスト#part1
+
+  - id: 1_5_1
+    description: |
+      Serialフロー (Dialogue -> Worker)
+      上流のジョブ文書(Output)を下流が参照(Input)する基本配線
+      外部文書(Project Doc)と内部文書(Job Doc)の識別
+    source_syntax:
+      serial:
+        - dialogue:
+            agent: Consultant
+            inputs: [クライアント要望書:ReqDoc01]
+            output: ヒアリング議事録
+        - worker:
+            agent: SystemArchitect
+            mode: generate
+            inputs: [ヒアリング議事録]
+            output: 基本設計書
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          - dialogue:
+              stack_path: root/serial_0/dialogue_0
+              agent: Consultant
+              inputs:
+                - クライアント要望書:ReqDoc01@stable
+              output: ヒアリング議事録#default
+          - worker:
+              stack_path: root/serial_0/worker_1
+              agent: SystemArchitect
+              mode: generate
+              inputs:
+                - ヒアリング議事録#default 
+              output: 基本設計書#default
+
+  - id: 1_5_2
+    description: |
+      Serialフロー (Worker -> Worker -> Worker)
+      上流で同一種類のジョブ文書(Output)を下流が省略参照(Input)する暗黙配線
+      外部文書(Project Doc)と内部文書(Job Doc)の識別
+    source_syntax:
+      serial:
+        - worker:
+            agent: Consultant
+            mode: generate
+            inputs: [クライアント要望書:ReqDoc1025]
+            output: ヒアリング議事録#1025
+        - worker:
+            agent: Consultant
+            mode: generate
+            inputs: [クライアント要望書:ReqDoc1103]
+            output: ヒアリング議事録#1103
+        - worker:
+            agent: SystemArchitect
+            mode: generate
+            inputs: [ヒアリング議事録]
+            output: 基本設計書
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          - worker:
+              stack_path: root/serial_0/worker_0
+              agent: Consultant
+              mode: generate
+              inputs: [クライアント要望書:ReqDoc1025@stable]
+              output: ヒアリング議事録#1025
+          - worker:
+              stack_path: root/serial_0/worker_1
+              agent: Consultant
+              mode: generate
+              inputs: [クライアント要望書:ReqDoc1103@stable]
+              output: ヒアリング議事録#1103
+          - worker:
+              stack_path: root/serial_0/worker_2
+              agent: SystemArchitect
+              mode: generate
+              inputs:
+                - ヒアリング議事録#1025
+                - ヒアリング議事録#1103
+              output: 基本設計書#default
+
+  - id: 1_5_3
+    description: |
+      Serialフロー (Worker -> Worker -> Worker)
+      上流で同一種類のジョブ文書(Output)を下流が明示参照(Input)する手動配線
+      外部文書(Project Doc)と内部文書(Job Doc)の識別
+    source_syntax:
+      serial:
+        - worker:
+            agent: Consultant
+            mode: generate
+            inputs: [クライアント要望書:ReqDoc1025]
+            output: ヒアリング議事録#1025
+        - worker:
+            agent: Consultant
+            mode: generate
+            inputs: [クライアント要望書:ReqDoc1103]
+            output: ヒアリング議事録#1103
+        - worker:
+            agent: SystemArchitect
+            mode: generate
+            inputs: 
+              - ヒアリング議事録#1025
+              - ヒアリング議事録#1103
+            output: 基本設計書
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          - worker:
+              stack_path: root/serial_0/worker_0
+              agent: Consultant
+              mode: generate
+              inputs: [クライアント要望書:ReqDoc1025@stable]
+              output: ヒアリング議事録#1025
+          - worker:
+              stack_path: root/serial_0/worker_1
+              agent: Consultant
+              mode: generate
+              inputs: [クライアント要望書:ReqDoc1103@stable]
+              output: ヒアリング議事録#1103
+          - worker:
+              stack_path: root/serial_0/worker_2
+              agent: SystemArchitect
+              mode: generate
+              inputs:
+                - ヒアリング議事録#1025
+                - ヒアリング議事録#1103
+              output: 基本設計書#default
+
+  - id: 1_5_4
+    description: |
+      Serial × Serial フロー
+      上流で同一種類のジョブ文書(Output)を下流が省略参照(Input)する暗黙配線
+      暗黙配線のスコープパターン
+    source_syntax:
+      serial:
+        - serial:
+          - worker:
+              agent: Consultant
+              mode: generate
+              inputs: [クライアント要望書:ReqDoc1018]
+              output: ヒアリング議事録#1018
+          - worker:
+              agent: Consultant
+              mode: generate
+              inputs: [クライアント要望書:ReqDoc1025]
+              output: ヒアリング議事録#1025
+        - serial:
+          - worker:
+              agent: Consultant
+              mode: generate
+              inputs: [クライアント要望書:ReqDoc1101]
+              output: ヒアリング議事録#1101
+          - worker:
+              agent: Consultant
+              mode: generate
+              inputs: [クライアント要望書:ReqDoc1108]
+              output: ヒアリング議事録#1108
+        - worker:
+            agent: SystemArchitect
+            mode: generate
+            inputs: [ヒアリング議事録]
+            output: 基本設計書
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          - serial:
+              stack_path: root/serial_0/serial_0
+              children:
+                - worker:
+                    stack_path: root/serial_0/serial_0/worker_0
+                    agent: Consultant
+                    mode: generate
+                    inputs: [クライアント要望書:ReqDoc1018@stable]
+                    output: ヒアリング議事録#1018
+                - worker:
+                    stack_path: root/serial_0/serial_0/worker_1
+                    agent: Consultant
+                    mode: generate
+                    inputs: [クライアント要望書:ReqDoc1025@stable]
+                    output: ヒアリング議事録#1025
+          - serial:
+              stack_path: root/serial_0/serial_1
+              children:
+                - worker:
+                    stack_path: root/serial_0/serial_1/worker_0
+                    agent: Consultant
+                    mode: generate
+                    inputs: [クライアント要望書:ReqDoc1101@stable]
+                    output: ヒアリング議事録#1101
+                - worker:
+                    stack_path: root/serial_0/serial_1/worker_1
+                    agent: Consultant
+                    mode: generate
+                    inputs: [クライアント要望書:ReqDoc1108@stable]
+                    output: ヒアリング議事録#1108
+          - worker:
+              stack_path: root/serial_0/worker_2
+              agent: SystemArchitect
+              mode: generate
+              inputs:
+                - ヒアリング議事録#1018
+                - ヒアリング議事録#1025
+                - ヒアリング議事録#1101
+                - ヒアリング議事録#1108
+              output: 基本設計書#default
+
+  - id: 1_5_5
+    description: |
+      Serial × Serial (Nested)
+      子(Parent Worker)と孫(Child Worker)が同一種類のジョブ文書を生成
+      最終工程でのDeep Collection（子孫全ての出力を暗黙的に収集）
+    source_syntax:
+      serial:
+        # --- Phase 1: 物理・インフラ層の監査 ---
+        - serial:
+            # 1-1. 親: インフラ責任者による方針確認
+            - worker:
+                agent: InfraManager
+                mode: generate
+                inputs: [セキュリティ規定:SecPol01]
+                output: 監査証跡#Infra_Policy_Check
+            # 1-2. 子: 現場担当者による実機確認フロー
+            - serial:
+                - worker:
+                    agent: NetworkAdmin
+                    mode: validate
+                    inputs: [ネットワーク構成図:NetMap@latest]
+                    output: 監査証跡#Firewall_Log
+                - worker:
+                    agent: ServerAdmin
+                    mode: validate
+                    inputs: [サーバー台帳:SvrList@latest]
+                    output: 監査証跡#OS_Patch_Log
+
+        # --- Phase 2: アプリケーション層の監査 ---
+        - serial:
+            # 2-1. 親: アプリ責任者による設計確認
+            - worker:
+                agent: AppManager
+                mode: generate
+                inputs: [セキュリティ規定:SecPol01]
+                output: 監査証跡#App_Design_Check
+            # 2-2. 子: 開発者によるコード診断フロー
+            - serial:
+                - worker:
+                    agent: BackendDev
+                    mode: validate
+                    inputs: [API仕様書:ApiSpec@latest]
+                    output: 監査証跡#SQL_Injection_Test
+                - worker:
+                    agent: FrontendDev
+                    mode: validate
+                    inputs: [画面仕様書:UISpec@latest]
+                    output: 監査証跡#XSS_Test
+
+        # --- Final: 全社認定 ---
+        # ここで `inputs: [監査証跡]` と指定すると、
+        # 上記の 6つの `監査証跡` すべてが自動的にリスト化されて注入される
+        - worker:
+            agent: CISO
+            mode: generate
+            inputs: [監査証跡]
+            output: セキュリティ認定証
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          - serial:
+              stack_path: root/serial_0/serial_0
+              children:
+                - worker:
+                    stack_path: root/serial_0/serial_0/worker_0
+                    agent: InfraManager
+                    mode: generate
+                    inputs: [セキュリティ規定:SecPol01@stable]
+                    output: 監査証跡#Infra_Policy_Check
+                - serial:
+                    stack_path: root/serial_0/serial_0/serial_1
+                    children:
+                      - worker:
+                          stack_path: root/serial_0/serial_0/serial_1/worker_0
+                          agent: NetworkAdmin
+                          mode: validate
+                          inputs: [ネットワーク構成図:NetMap@latest]
+                          output: 監査証跡#Firewall_Log
+                      - worker:
+                          stack_path: root/serial_0/serial_0/serial_1/worker_1
+                          agent: ServerAdmin
+                          mode: validate
+                          inputs: [サーバー台帳:SvrList@latest]
+                          output: 監査証跡#OS_Patch_Log
+          - serial:
+              stack_path: root/serial_0/serial_1
+              children:
+                - worker:
+                    stack_path: root/serial_0/serial_1/worker_0
+                    agent: AppManager
+                    mode: generate
+                    inputs: [セキュリティ規定:SecPol01@stable]
+                    output: 監査証跡#App_Design_Check
+                - serial:
+                    stack_path: root/serial_0/serial_1/serial_1
+                    children:
+                      - worker:
+                          stack_path: root/serial_0/serial_1/serial_1/worker_0
+                          agent: BackendDev
+                          mode: validate
+                          inputs: [API仕様書:ApiSpec@latest]
+                          output: 監査証跡#SQL_Injection_Test
+                      - worker:
+                          stack_path: root/serial_0/serial_1/serial_1/worker_1
+                          agent: FrontendDev
+                          mode: validate
+                          inputs: [画面仕様書:UISpec@latest]
+                          output: 監査証跡#XSS_Test
+          - worker:
+              stack_path: root/serial_0/worker_2
+              agent: CISO
+              mode: generate
+              inputs:
+                # Deep Collection Result: ネスト深さに関係なく、先行する全同名文書をフラットに収集
+                - 監査証跡#Infra_Policy_Check
+                - 監査証跡#Firewall_Log
+                - 監査証跡#OS_Patch_Log
+                - 監査証跡#App_Design_Check
+                - 監査証跡#SQL_Injection_Test
+                - 監査証跡#XSS_Test
+              output: セキュリティ認定証#default
+
+  - id: 1_5_6
+    description: |
+      Serialフロー (Ensemble -> Generate_Team)
+      「発散(Diverge)」から「収束・品質研磨(Refine)」への接続
+      Ensembleの統合成果物を、Generate_Teamが入力として受け取る配線
+    source_syntax:
+      serial:
+        # Phase 1: ビジョンの発散と統合 (Brainstorming)
+        - ensemble:
+            generators: [CTO, CMO, CSO] # 技術、マーケ、戦略のトップ
+            samples: 1
+            consolidator: CEO
+            inputs: [市場調査:MarketRes2030]
+            output: ビジョン素案
+        
+        # Phase 2: 計画書の策定と品質担保 (Documentation & Review)
+        - generate_team:
+            generator: ChiefOfStaff # 経営企画室長
+            loop: 5
+            inputs: 
+              # Ensembleの成果物(ビジョン素案)をインプットにする
+              - ビジョン素案
+            output: 中期経営計画書
+            validators: [CFO, Legal]
+
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          - serial:
+              stack_path: root/serial_0/serial_0
+              children:
+                - parallel:
+                    stack_path: root/serial_0/serial_0/parallel_0
+                    children:
+                      - worker:
+                          stack_path: root/serial_0/serial_0/parallel_0/worker_0
+                          agent: CTO
+                          mode: generate
+                          inputs: [市場調査:MarketRes2030@stable]
+                          output: _ビジョン素案#default/CTO/1
+                      - worker:
+                          stack_path: root/serial_0/serial_0/parallel_0/worker_1
+                          agent: CMO
+                          mode: generate
+                          inputs: [市場調査:MarketRes2030@stable]
+                          output: _ビジョン素案#default/CMO/1
+                      - worker:
+                          stack_path: root/serial_0/serial_0/parallel_0/worker_2
+                          agent: CSO
+                          mode: generate
+                          inputs: [市場調査:MarketRes2030@stable]
+                          output: _ビジョン素案#default/CSO/1
+
+                - worker:
+                    stack_path: root/serial_0/serial_0/worker_1
+                    agent: CEO
+                    mode: generate
+                    inputs:
+                      - 市場調査:MarketRes2030@stable
+                      - _ビジョン素案#default/CTO/1
+                      - _ビジョン素案#default/CMO/1
+                      - _ビジョン素案#default/CSO/1
+                    output: ビジョン素案#default
+
+          # --- Expanded Generate Team ---
+          - serial:
+              stack_path: root/serial_0/serial_1
+              children:
+                - loop:
+                    stack_path: root/serial_0/serial_1/loop_0
+                    count: 5
+                    break_on: success
+                    contents:
+                      serial:
+                        stack_path: root/serial_0/serial_1/loop_0/v{$LOOP}/serial_0
+                        children:
+                          # 1. Generator (Refinement)
+                          - worker:
+                              stack_path: root/serial_0/serial_1/loop_0/v{$LOOP}/serial_0/worker_0
+                              agent: ChiefOfStaff
+                              mode: generate
+                              inputs:
+                                - ビジョン素案#default # Ensemble(CEO)の出力を受け取る
+                                - 中期経営計画書#default/v{$LOOP-1}
+                                - 中期経営計画書__Review_CFO#default/v{$LOOP-1}
+                                - 中期経営計画書__Review_Legal#default/v{$LOOP-1}
+                              output: 中期経営計画書#default/v{$LOOP}
+                          
+                          # 2. Validators (Gatekeepers)
+                          - parallel:
+                              stack_path: root/serial_0/serial_1/loop_0/v{$LOOP}/serial_0/parallel_1
+                              children:
+                                - worker:
+                                    stack_path: root/serial_0/serial_1/loop_0/v{$LOOP}/serial_0/parallel_1/worker_0
+                                    agent: CFO
+                                    mode: validate
+                                    inputs:
+                                      - ビジョン素案#default
+                                      - 中期経営計画書#default/v{$LOOP}
+                                    output: 中期経営計画書__Review_CFO#default/v{$LOOP}
+                                - worker:
+                                    stack_path: root/serial_0/serial_1/loop_0/v{$LOOP}/serial_0/parallel_1/worker_1
+                                    agent: Legal
+                                    mode: validate
+                                    inputs:
+                                      - ビジョン素案#default
+                                      - 中期経営計画書#default/v{$LOOP}
+                                    output: 中期経営計画書__Review_Legal#default/v{$LOOP}
+                - scope_resolve:
+                    stack_path: root/serial_0/serial_1/scope_resolve_1
+                    target: 中期経営計画書
+                    from_scope: loop
+                    strategy: take_latest_success
+                    map_to: 中期経営計画書#default
+
+  - id: 1_5_7
+    description: |
+      Serialフロー (Generate_Team -> Ensemble)
+      「コアの確立(Establish)」から「応用展開(Expand)」への接続
+      Scope Exit Resolution: Generate_Team(Loop)脱出時に v{$LOOP} が解決(Unstack)され、
+      後続のEnsembleは解決済みのID(#default)を参照する
+    source_syntax:
+      serial:
+        - generate_team:
+            generator: PlatformArch
+            loop: 3
+            inputs: [要件定義:ReqDoc]
+            output: OpenAPI仕様書
+            validators: [SecurityLead]
+        - ensemble:
+            generators: [iOS_Team, Android_Team]
+            samples: 1
+            consolidator: DevRel
+            inputs: [OpenAPI仕様書]
+            output: SDKパッケージ
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          - serial:
+              stack_path: root/serial_0/serial_0
+              children:
+                - loop:
+                    stack_path: root/serial_0/serial_0/loop_0
+                    count: 3
+                    break_on: success
+                    contents:
+                      serial:
+                        stack_path: root/serial_0/serial_0/loop_0/v{$LOOP}/serial_0
+                        children:
+                          - worker:
+                              stack_path: root/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/worker_0
+                              agent: PlatformArch
+                              mode: generate
+                              inputs:
+                                - 要件定義:ReqDoc@stable
+                                - OpenAPI仕様書#default/v{$LOOP-1}
+                                - OpenAPI仕様書__Review_SecurityLead#default/v{$LOOP-1}
+                              output: OpenAPI仕様書#default/v{$LOOP}
+                          - parallel:
+                              stack_path: root/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1
+                              children:
+                                - worker:
+                                    stack_path: root/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1/worker_0
+                                    agent: SecurityLead
+                                    mode: validate
+                                    inputs:
+                                      - 要件定義:ReqDoc@stable
+                                      - OpenAPI仕様書#default/v{$LOOP}
+                                    output: OpenAPI仕様書__Review_SecurityLead#default/v{$LOOP}
+                - scope_resolve:
+                    stack_path: root/serial_0/serial_0/scope_resolve_1
+                    target: OpenAPI仕様書
+                    from_scope: loop
+                    strategy: take_latest_success
+                    map_to: OpenAPI仕様書#default
+          # Ensemble Expansion
+          - serial:
+              stack_path: root/serial_0/serial_1
+              children:
+                - parallel:
+                    stack_path: root/serial_0/serial_1/parallel_0
+                    children:
+                      - worker:
+                          stack_path: root/serial_0/serial_1/parallel_0/worker_0
+                          agent: iOS_Team
+                          mode: generate
+                          inputs:
+                            - OpenAPI仕様書#default # Resolved ID (not v{$LOOP})
+                          output: _SDKパッケージ#default/iOS_Team/1
+                      - worker:
+                          stack_path: root/serial_0/serial_1/parallel_0/worker_1
+                          agent: Android_Team
+                          mode: generate
+                          inputs:
+                            - OpenAPI仕様書#default # Resolved ID (not v{$LOOP})
+                          output: _SDKパッケージ#default/Android_Team/1
+                - worker:
+                    stack_path: root/serial_0/serial_1/worker_1
+                    agent: DevRel
+                    mode: generate
+                    inputs:
+                      - OpenAPI仕様書#default
+                      - _SDKパッケージ#default/iOS_Team/1
+                      - _SDKパッケージ#default/Android_Team/1
+                    output: SDKパッケージ#default
+
+  - id: 1_5_8
+    description: |
+      Generate_Team with Explicit Physical ID
+      ユーザーが物理IDを明示指定した場合のIDスタッキングと解決(Unstack)
+      Logic: Output(#FixedID) -> LoopInternal(#FixedID/v{$LOOP}) -> Resolved(#FixedID)
+    source_syntax:
+      serial:
+        - generate_team:
+            generator: Architect
+            loop: 3
+            inputs: [要件:Req]
+            output: 設計書#Ver1.0
+            validators: [Reviewer]
+        - worker:
+            agent: Manager
+            mode: generate
+            inputs: [設計書#Ver1.0]
+            output: 承認ログ
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          - serial:
+              stack_path: root/serial_0/serial_0
+              children:
+                - loop:
+                    stack_path: root/serial_0/serial_0/loop_0
+                    count: 3
+                    break_on: success
+                    contents:
+                      serial:
+                        stack_path: root/serial_0/serial_0/loop_0/v{$LOOP}/serial_0
+                        children:
+                          - worker:
+                              stack_path: root/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/worker_0
+                              agent: Architect
+                              mode: generate
+                              inputs:
+                                - 要件:Req@stable
+                                - 設計書#Ver1.0/v{$LOOP-1}
+                                - 設計書__Review_Reviewer#Ver1.0/v{$LOOP-1}
+                              output: 設計書#Ver1.0/v{$LOOP}
+                          - parallel:
+                              stack_path: root/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1
+                              children:
+                                - worker:
+                                    stack_path: root/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1/worker_0
+                                    agent: Reviewer
+                                    mode: validate
+                                    inputs:
+                                      - 要件:Req@stable
+                                      - 設計書#Ver1.0/v{$LOOP}
+                                    output: 設計書__Review_Reviewer#Ver1.0/v{$LOOP}
+                - scope_resolve:
+                    stack_path: root/serial_0/serial_0/scope_resolve_1
+                    target: 設計書
+                    from_scope: loop
+                    strategy: take_latest_success
+                    map_to: 設計書#Ver1.0
+          
+          - worker:
+              stack_path: root/serial_0/worker_1
+              agent: Manager
+              mode: generate
+              inputs:
+                - 設計書#Ver1.0
+              output: 承認ログ#default
+
+  - id: 1_6_1
+    description: |
+      Parallelフロー (独立したWorker)
+      異なるジョブ文書の同時生成
+    source_syntax:
+      parallel:
+        - worker:
+            agent: LegalAdvisor
+            mode: generate
+            inputs:
+              - 対象企業データ:CompData@latest
+              - 法律ガイドライン:LawGuide # @省略
+            output: 法務リスク評価書
+        - worker:
+            agent: FinancialAnalyst
+            mode: generate
+            inputs:
+              - 対象企業データ:CompData@latest
+              - 会計基準:IFRS_2025@stable
+            output: 財務健全性レポート
+    expansion_ir:
+      parallel:
+        stack_path: root/parallel_0
+        children:
+          - worker:
+              stack_path: root/parallel_0/worker_0
+              agent: LegalAdvisor
+              mode: generate
+              inputs:
+                - 対象企業データ:CompData@latest
+                - 法律ガイドライン:LawGuide@stable
+              output: 法務リスク評価書#default
+          - worker:
+              stack_path: root/parallel_0/worker_1
+              agent: FinancialAnalyst
+              mode: generate
+              inputs:
+                - 対象企業データ:CompData@latest
+                - 会計基準:IFRS_2025@stable
+              output: 財務健全性レポート#default
+
+  - id: 1_6_2
+    description: |
+      Parallelフロー (独立したWorker)
+      同一ジョブ文書の同時生成
+      ※Generic ParallelはIDスタックしないため、物理ID(#suffix)による明示的な衝突回避が必須
+    source_syntax:
+      parallel:
+        - worker:
+            agent: UXDesigner
+            mode: generate
+            inputs: [プロトタイプ:ProtoV1]
+            output: レビュー報告書#UX
+        - worker:
+            agent: TechLead
+            mode: generate
+            inputs: [プロトタイプ:ProtoV1]
+            output: レビュー報告書#Tech
+    expansion_ir:
+      parallel:
+        stack_path: root/parallel_0
+        children:
+          - worker:
+              stack_path: root/parallel_0/worker_0
+              agent: UXDesigner
+              mode: generate
+              inputs: [プロトタイプ:ProtoV1@stable]
+              output: レビュー報告書#UX
+          - worker:
+              stack_path: root/parallel_0/worker_1
+              agent: TechLead
+              mode: generate
+              inputs: [プロトタイプ:ProtoV1@stable]
+              output: レビュー報告書#Tech
+
+  - id: 1_6_3
+    description: |
+      Parallel × Parallel フロー (Nested)
+      大規模な同時並行作業
+      同一ジョブ文書の同時生成（全て異なる物理IDを指定）
+    source_syntax:
+      parallel:
+        # Region A Team
+        - parallel:
+            - worker:
+                agent: AnalystTokyo
+                mode: generate
+                inputs: [市場データ:GlobalData]
+                output: 地域分析レポート#Tokyo
+            - worker:
+                agent: AnalystSeoul
+                mode: generate
+                inputs: [市場データ:GlobalData]
+                output: 地域分析レポート#Seoul
+        # Region B Team
+        - parallel:
+            - worker:
+                agent: AnalystNY
+                mode: generate
+                inputs: [市場データ:GlobalData]
+                output: 地域分析レポート#NY
+            - worker:
+                agent: AnalystLondon
+                mode: generate
+                inputs: [市場データ:GlobalData]
+                output: 地域分析レポート#London
+    expansion_ir:
+      parallel:
+        stack_path: root/parallel_0
+        children:
+          - parallel:
+              stack_path: root/parallel_0/parallel_0
+              children:
+                - worker:
+                    stack_path: root/parallel_0/parallel_0/worker_0
+                    agent: AnalystTokyo
+                    mode: generate
+                    inputs: [市場データ:GlobalData@stable]
+                    output: 地域分析レポート#Tokyo
+                - worker:
+                    stack_path: root/parallel_0/parallel_0/worker_1
+                    agent: AnalystSeoul
+                    mode: generate
+                    inputs: [市場データ:GlobalData@stable]
+                    output: 地域分析レポート#Seoul
+          - parallel:
+              stack_path: root/parallel_0/parallel_1
+              children:
+                - worker:
+                    stack_path: root/parallel_0/parallel_1/worker_0
+                    agent: AnalystNY
+                    mode: generate
+                    inputs: [市場データ:GlobalData@stable]
+                    output: 地域分析レポート#NY
+                - worker:
+                    stack_path: root/parallel_0/parallel_1/worker_1
+                    agent: AnalystLondon
+                    mode: generate
+                    inputs: [市場データ:GlobalData@stable]
+                    output: 地域分析レポート#London
+
+  - id: 1_7_1
+    description: |
+      Serial × Parallel フロー
+      「並列で作って(Parallel) → まとめる(Serial)」の基本形
+      Deep Collection: Parallelブロック内の出力を後続Workerが収集
+    source_syntax:
+      serial:
+        - parallel:
+            - worker:
+                agent: FrontendDev
+                mode: generate
+                inputs: [画面仕様書:UISpec]
+                output: 実装コンポーネント#UI
+            - worker:
+                agent: BackendDev
+                mode: generate
+                inputs: [API仕様書:ApiSpec]
+                output: 実装コンポーネント#API
+        - worker:
+            agent: QAEngineer
+            mode: generate
+            # ここでParallel内の2つの成果物を拾えるか
+            inputs: [実装コンポーネント]
+            output: 結合テスト報告書
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          - parallel:
+              stack_path: root/serial_0/parallel_0
+              children:
+                - worker:
+                    stack_path: root/serial_0/parallel_0/worker_0
+                    agent: FrontendDev
+                    mode: generate
+                    inputs: [画面仕様書:UISpec@stable]
+                    output: 実装コンポーネント#UI
+                - worker:
+                    stack_path: root/serial_0/parallel_0/worker_1
+                    agent: BackendDev
+                    mode: generate
+                    inputs: [API仕様書:ApiSpec@stable]
+                    output: 実装コンポーネント#API
+          - worker:
+              stack_path: root/serial_0/worker_1
+              agent: QAEngineer
+              mode: generate
+              inputs:
+                - 実装コンポーネント#UI
+                - 実装コンポーネント#API
+              output: 結合テスト報告書#default
+
+  - id: 1_7_2
+    description: |
+      Parallel × Serial フロー
+      「A/Bテスト」のように、並列した世界線の中でそれぞれ直列な工程が進む
+      Deep Collection: 複数のSerialラインから産まれた成果物を一括収集
+    source_syntax:
+      serial:
+        - parallel:
+            # Plan A Line
+            - serial:
+                - worker:
+                    agent: CopywriterA
+                    mode: generate
+                    inputs: [訴求軸:PlanA]
+                    output: 広告案#Copy_A
+                - worker:
+                    agent: DesignerA
+                    mode: generate
+                    inputs: [広告案#Copy_A]
+                    output: 広告クリエイティブ#Var_A
+            # Plan B Line
+            - serial:
+                - worker:
+                    agent: CopywriterB
+                    mode: generate
+                    inputs: [訴求軸:PlanB]
+                    output: 広告案#Copy_B
+                - worker:
+                    agent: DesignerB
+                    mode: generate
+                    inputs: [広告案#Copy_B]
+                    output: 広告クリエイティブ#Var_B
+        - worker:
+            agent: MarketingLead
+            mode: generate
+            # 深いネストにある Var_A と Var_B を収集
+            inputs: [広告クリエイティブ]
+            output: ABテスト選定書
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          - parallel:
+              stack_path: root/serial_0/parallel_0
+              children:
+                - serial:
+                    stack_path: root/serial_0/parallel_0/serial_0
+                    children:
+                      - worker:
+                          stack_path: root/serial_0/parallel_0/serial_0/worker_0
+                          agent: CopywriterA
+                          mode: generate
+                          inputs: [訴求軸:PlanA@stable]
+                          output: 広告案#Copy_A
+                      - worker:
+                          stack_path: root/serial_0/parallel_0/serial_0/worker_1
+                          agent: DesignerA
+                          mode: generate
+                          inputs: [広告案#Copy_A]
+                          output: 広告クリエイティブ#Var_A
+                - serial:
+                    stack_path: root/serial_0/parallel_0/serial_1
+                    children:
+                      - worker:
+                          stack_path: root/serial_0/parallel_0/serial_1/worker_0
+                          agent: CopywriterB
+                          mode: generate
+                          inputs: [訴求軸:PlanB@stable]
+                          output: 広告案#Copy_B
+                      - worker:
+                          stack_path: root/serial_0/parallel_0/serial_1/worker_1
+                          agent: DesignerB
+                          mode: generate
+                          inputs: [広告案#Copy_B]
+                          output: 広告クリエイティブ#Var_B
+          - worker:
+              stack_path: root/serial_0/worker_1
+              agent: MarketingLead
+              mode: generate
+              inputs:
+                - 広告クリエイティブ#Var_A
+                - 広告クリエイティブ#Var_B
+              output: ABテスト選定書#default
+
+  - id: 1_7_3
+    description: |
+      Serial, Parallel 複合Nested (Complex)
+      「大規模システム移行」のような複雑な依存関係
+      最終工程でのDeep Collection（子、孫、曾孫のスコープから該当する全ての出力を収集）
+    source_syntax:
+      serial:
+        - parallel:
+            # Branch 1: DB Migration Team
+            - serial:
+                - worker:
+                    agent: DBA
+                    mode: generate
+                    inputs: [移行計画:PlanDoc]
+                    output: 移行ログ#DB_Backup
+                - parallel:
+                    - worker:
+                        agent: DBA
+                        mode: generate
+                        inputs: [移行ログ#DB_Backup]
+                        output: 移行ログ#DB_SchemaUpdate
+                    - worker:
+                        agent: DBA
+                        mode: generate
+                        inputs: [移行ログ#DB_Backup]
+                        output: 移行ログ#DB_DataTransfer
+            # Branch 2: App Deployment Team
+            - serial:
+                - worker:
+                    agent: DevOps
+                    mode: generate
+                    inputs: [移行計画:PlanDoc]
+                    output: 移行ログ#App_Build
+                - parallel:
+                    - worker:
+                        agent: DevOps
+                        mode: generate
+                        inputs: [移行ログ#App_Build]
+                        output: 移行ログ#App_CanaryDeploy
+        - worker:
+            agent: SiteReliabilityEngineer
+            mode: generate
+            # ここで「移行ログ」を要求すると、
+            # 深さの異なる5つのログ全てがフラットに注入されるべきである
+            inputs: [移行ログ]
+            output: 移行完了判定書
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          - parallel:
+              stack_path: root/serial_0/parallel_0
+              children:
+                - serial:
+                    stack_path: root/serial_0/parallel_0/serial_0
+                    children:
+                      - worker:
+                          stack_path: root/serial_0/parallel_0/serial_0/worker_0
+                          agent: DBA
+                          mode: generate
+                          inputs: [移行計画:PlanDoc@stable]
+                          output: 移行ログ#DB_Backup
+                      - parallel:
+                          stack_path: root/serial_0/parallel_0/serial_0/parallel_1
+                          children:
+                            - worker:
+                                stack_path: root/serial_0/parallel_0/serial_0/parallel_1/worker_0
+                                agent: DBA
+                                mode: generate
+                                inputs: [移行ログ#DB_Backup]
+                                output: 移行ログ#DB_SchemaUpdate
+                            - worker:
+                                stack_path: root/serial_0/parallel_0/serial_0/parallel_1/worker_1
+                                agent: DBA
+                                mode: generate
+                                inputs: [移行ログ#DB_Backup]
+                                output: 移行ログ#DB_DataTransfer
+                - serial:
+                    stack_path: root/serial_0/parallel_0/serial_1
+                    children:
+                      - worker:
+                          stack_path: root/serial_0/parallel_0/serial_1/worker_0
+                          agent: DevOps
+                          mode: generate
+                          inputs: [移行計画:PlanDoc@stable]
+                          output: 移行ログ#App_Build
+                      - parallel:
+                          stack_path: root/serial_0/parallel_0/serial_1/parallel_1
+                          children:
+                            - worker:
+                                stack_path: root/serial_0/parallel_0/serial_1/parallel_1/worker_0
+                                agent: DevOps
+                                mode: generate
+                                inputs: [移行ログ#App_Build]
+                                output: 移行ログ#App_CanaryDeploy
+          - worker:
+              stack_path: root/serial_0/worker_1
+              agent: SiteReliabilityEngineer
+              mode: generate
+              inputs:
+                # Deep Collection Result:
+                - 移行ログ#DB_Backup
+                - 移行ログ#DB_SchemaUpdate
+                - 移行ログ#DB_DataTransfer
+                - 移行ログ#App_Build
+                - 移行ログ#App_CanaryDeploy
+              output: 移行完了判定書#default

@@ -1,0 +1,1628 @@
+pac_code: cocrea-5120
+title: Master ODL for System Verification
+version: 1.0.0
+pac_type: TestPattern
+layer: domain
+domain: cocrea
+topic: Test
+sub_topic: GrandMasterCase
+
+overview:
+  purpose: |
+    ODLコンパイラおよび実行エンジン（Co-creation Engine）の挙動を網羅的に検証するための、標準テストケース集（Grand Master Case）を定義する。
+    パターンの展開、IDスタッキング、自動配線（Auto-Wiring）が仕様通りに行われるかを検証し、処理系の信頼性を担保することを目的とする。
+  target_audience: |
+    - ODL処理系（Compiler/Runtime）の実装・開発者
+    - ODL仕様の整合性を確認する QAエンジニア / アーキテクト
+  scope: |
+    基本プリミティブ（Worker, Dialogue）から、複合パターン（Generate_Team, Ensemble, Fan-out）、およびそれらのネスト構造までを網羅する。
+    特に、コンテキストの継承（Context Inheritance）と物理ID生成ルールの境界値テストに重点を置く。
+  value: |
+    組織OSの「カーネルパニック（予期せぬ停止や不整合）」を未然に防ぎ、定義された組織構造とプロセスが、計算機上で正確かつ決定論的に再現されることを保証する。
+
+index: |
+  ### テスト計画の整理
+
+  * **1_系：Primitives & Fixed Patterns (contentsなし)**
+      * 対象: `worker`, `dialogue`, `serial` (list), `parallel` (list), `generate_team` (validators list), `ensemble` (generators list)
+      * 特徴: プロパティとして **`contents` ブロックを持たない**もの。構造が静的。
+      * 狙い: 基本的なI/O、IDスタッキング、Wiringの検証。
+
+  * **2_系：Structural Patterns (contentsあり・単層)**
+      * 対象: `fan_out`, `loop`, `approval_gate`
+      * 特徴: プロパティとして **`contents: <Block>` を持つ**もの。
+      * 狙い: 「ある処理ブロック」をラップして制御する、高階関数的な挙動の検証。
+
+  * **3_系：Nested Structures (contentsの入れ子)**
+      * 対象: `loop` in `fan_out` など
+      * 特徴: `contents` の中にさらに `contents` を持つパターンが登場。
+      * 狙い: スコープ解決（変数の見え方）や、IDスタッキングが深くなった時の整合性検証。
+
+  * **9_系：Error Cases (コンパイルエラー)**
+      * 対象: 循環参照、前方参照違反、必須パラメータ欠落、`fan_out` in `fan_out` (制約違反) など。
+      * 備忘メモ: worker(mode=validate)の単独使用禁止（自動配線用の特殊なモードなので）
+
+case:
+  - id: 2_1_1
+    description: |
+      単体approval_gate（not under serial）
+      contentsに単一のworkerを指定
+    source_syntax:
+      approval_gate:
+        approver: ProjectManager
+        target: プロジェクト定義書
+        contents:
+          worker:
+            agent: ProjectArchitect
+            mode: generate
+            inputs: 
+              - 全社規定:Rules01
+              - 市場レポート:Mkt05@latest
+            output: プロジェクト定義書
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          - loop:
+              stack_path: root/serial_0/loop_0
+              count: 10
+              break_on: success
+              contents:
+                serial:
+                  stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0
+                  children:
+                    - worker:
+                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/worker_0
+                        agent: ProjectArchitect
+                        mode: generate
+                        inputs: 
+                          - 全社規定:Rules01@stable
+                          - 市場レポート:Mkt05@latest
+                          - プロジェクト定義書#default/v{$LOOP-1}
+                          - プロジェクト定義書__Review_ProjectManager#default/v{$LOOP-1}
+                        output: プロジェクト定義書#default/v{$LOOP}
+                    - approver:
+                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/approver_1
+                        agent: ProjectManager
+                        inputs: 
+                          # --- 1. Current Target ---
+                          - プロジェクト定義書#default/v{$LOOP}                        
+                          # --- 2. History Context (Diff & Feedback) ---
+                          - プロジェクト定義書#default/v{$LOOP-1}
+                          - プロジェクト定義書__Review_ProjectManager#default/v{$LOOP-1}
+                          # --- 3. Process Evidence (Audit Trail) ---
+                          # --- 4. References (External Inputs) ---
+                          - 全社規定:Rules01@stable
+                          - 市場レポート:Mkt05@latest
+                        output: プロジェクト定義書__Review_ProjectManager#default/v{$LOOP}
+          - scope_resolve:
+              stack_path: root/serial_0/scope_resolve_1
+              target: プロジェクト定義書
+              from_scope: loop
+              strategy: take_latest_success
+              map_to: プロジェクト定義書#default
+
+  - id: 2_1_2
+    description: |
+      単体approval_gate（not under serial）
+      contentsに単一のensembleを指定
+      【シナリオ：ロゴデザインコンペ】
+      アートディレクターが複数のデザイナーに案を出させ(Ensemble)、
+      クライアント(Approver)が気に入るまで、フィードバック付きでコンペをやり直す。
+    source_syntax:
+      approval_gate:
+        approver: Client_CEO
+        target: 新ロゴ案
+        contents:
+          ensemble:
+            generators: [DesignerA, DesignerB]
+            samples: 2
+            consolidator: ArtDirector
+            inputs: [ブランドコンセプト:BrandDoc]
+            output: 新ロゴ案
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          - loop:
+              stack_path: root/serial_0/loop_0
+              count: 10
+              break_on: success
+              contents:
+                serial:
+                  stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0
+                  children:
+                    # --- Inside Ensemble Expansion ---
+                    - serial:
+                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0
+                        children:
+                          # 1. Diverge (Generators receive feedback from previous Gate loop)
+                          - parallel:
+                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/parallel_0
+                              children:
+                                - worker:
+                                    stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/parallel_0/worker_0
+                                    agent: DesignerA
+                                    mode: generate
+                                    inputs: 
+                                      - ブランドコンセプト:BrandDoc@stable
+                                      - _新ロゴ案#default/v{$LOOP-1}/DesignerA/1
+                                      - 新ロゴ案__Review_Client_CEO#default/v{$LOOP-1} # Feedback Injection
+                                    output: _新ロゴ案#default/v{$LOOP}/DesignerA/1
+                                - worker:
+                                    stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/parallel_0/worker_1
+                                    agent: DesignerA
+                                    mode: generate
+                                    inputs: 
+                                      - ブランドコンセプト:BrandDoc@stable
+                                      - _新ロゴ案#default/v{$LOOP-1}/DesignerA/2
+                                      - 新ロゴ案__Review_Client_CEO#default/v{$LOOP-1}
+                                    output: _新ロゴ案#default/v{$LOOP}/DesignerA/2
+                                - worker:
+                                    stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/parallel_0/worker_2
+                                    agent: DesignerB
+                                    mode: generate
+                                    inputs: 
+                                      - ブランドコンセプト:BrandDoc@stable
+                                      - _新ロゴ案#default/v{$LOOP-1}/DesignerB/1
+                                      - 新ロゴ案__Review_Client_CEO#default/v{$LOOP-1}
+                                    output: _新ロゴ案#default/v{$LOOP}/DesignerB/1
+                                - worker:
+                                    stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/parallel_0/worker_3
+                                    agent: DesignerB
+                                    mode: generate
+                                    inputs: 
+                                      - ブランドコンセプト:BrandDoc@stable
+                                      - _新ロゴ案#default/v{$LOOP-1}/DesignerB/2
+                                      - 新ロゴ案__Review_Client_CEO#default/v{$LOOP-1}
+                                    output: _新ロゴ案#default/v{$LOOP}/DesignerB/2
+                          # 2. Converge
+                          - worker:
+                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/worker_1
+                              agent: ArtDirector
+                              mode: generate
+                              inputs:
+                                - ブランドコンセプト:BrandDoc@stable
+                                - _新ロゴ案#default/v{$LOOP}/DesignerA/1
+                                - _新ロゴ案#default/v{$LOOP}/DesignerA/2
+                                - _新ロゴ案#default/v{$LOOP}/DesignerB/1
+                                - _新ロゴ案#default/v{$LOOP}/DesignerB/2
+                                # Consolidator also sees the feedback
+                                - 新ロゴ案#default/v{$LOOP-1}
+                                - 新ロゴ案__Review_Client_CEO#default/v{$LOOP-1}
+                              output: 新ロゴ案#default/v{$LOOP} # Target for Gate
+
+                    # --- Approval Gate approver ---
+                    - approver:
+                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/approver_1
+                        agent: Client_CEO
+                        inputs:
+                          # --- 1. Current Target ---
+                          - 新ロゴ案#default/v{$LOOP}
+                          # --- 2. History Context (Diff & Feedback) ---
+                          - 新ロゴ案#default/v{$LOOP-1}
+                          - 新ロゴ案__Review_Client_CEO#default/v{$LOOP-1}
+                          # --- 3. Process Evidence (Audit Trail) ---
+                          # --- 4. References (External Inputs) ---
+                          - ブランドコンセプト:BrandDoc@stable
+                        output: 新ロゴ案__Review_Client_CEO#default/v{$LOOP}
+          - scope_resolve:
+              stack_path: root/serial_0/scope_resolve_1
+              target: 新ロゴ案
+              from_scope: loop
+              strategy: take_latest_success
+              map_to: 新ロゴ案#default
+
+  - id: 2_1_3
+    description: |
+      単体approval_gate（not under serial）
+      contentsに単一のgenerate_teamを指定
+      【シナリオ：危機管理プレスリリース】
+      広報チーム内でドラフトを推敲・法務チェックし(Team)、
+      完成稿を社長が決裁する(Gate)。社長NGが出たらチーム検討からやり直し。
+      ※二重ループ構造（Outer:社長承認, Inner:チーム推敲）
+    source_syntax:
+      approval_gate:
+        approver: CEO
+        target: 謝罪リリース
+        contents:
+          generate_team:
+            generator: PR_Manager
+            loop: 3
+            inputs: [事故報告書:IncidentReport]
+            output: 謝罪リリース
+            validators: [Legal_Advisor]
+    expansion_ir:
+      # Outer Loop (Approval Gate)
+      serial:
+        stack_path: root/serial_0
+        children:
+          - loop:
+              stack_path: root/serial_0/loop_0
+              count: 10
+              break_on: success
+              contents:
+                serial:
+                  stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0
+                  children:
+                    # --- Inner Loop (Generate Team) ---
+                    - serial:
+                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0
+                        children:
+                          - loop:
+                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/loop_0
+                              count: 3
+                              break_on: success
+                              contents:
+                                serial:
+                                  stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/loop_0/v{$LOOP}/serial_0
+                                  children:
+                                    - worker:
+                                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/worker_0
+                                        agent: PR_Manager
+                                        mode: generate
+                                        inputs:
+                                          - 事故報告書:IncidentReport@stable
+                                          # Inner Loop Feedback
+                                          - 謝罪リリース#default/v{$LOOP^1-1}
+                                          - 謝罪リリース#default/v{$LOOP^1}/v{$LOOP-1}
+                                          - 謝罪リリース__Review_Legal_Advisor#default/v{$LOOP^1}/v{$LOOP-1}
+                                          # Outer Loop Feedback (注入される)
+                                          - 謝罪リリース__Review_CEO#default/v{$LOOP^1-1}
+                                        # ID Stacking: v{Outer}/{Inner}
+                                        output: 謝罪リリース#default/v{$LOOP^1}/v{$LOOP}
+                                    - parallel:
+                                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1
+                                        children:
+                                          - worker:
+                                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1/worker_0
+                                              agent: Legal_Advisor
+                                              mode: validate
+                                              inputs:
+                                                - 事故報告書:IncidentReport@stable
+                                                - 謝罪リリース#default/v{$LOOP^1}/v{$LOOP}
+                                                - 謝罪リリース__Review_CEO#default/v{$LOOP^1-1}
+                                              output: 謝罪リリース__Review_Legal_Advisor#default/v{$LOOP^1}/v{$LOOP}
+                          - scope_resolve:
+                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/scope_resolve_1
+                              target: 謝罪リリース
+                              from_scope: loop
+                              strategy: take_latest_success
+                              map_to: 謝罪リリース#default/v{$LOOP}
+
+                    # --- Approval Gate Approver ---
+                    # チームループを抜けた最終成果物(Unstacked from Inner Loop)を審査
+                    - approver:
+                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/approver_1
+                        agent: CEO
+                        inputs:
+                          # --- 1. Current Target ---
+                          - 謝罪リリース#default/v{$LOOP}
+                          # --- 2. History Context (Diff & Feedback) ---
+                          - 謝罪リリース#default/v{$LOOP-1}
+                          - 謝罪リリース__Review_CEO#default/v{$LOOP-1}
+                          # --- 3. Process Evidence (Audit Trail) ---
+                          # --- 4. References (External Inputs) ---
+                          - 事故報告書:IncidentReport@stable
+                        output: 謝罪リリース__Review_CEO#default/v{$LOOP}
+          - scope_resolve:
+              stack_path: root/serial_0/scope_resolve_1
+              target: 謝罪リリース
+              from_scope: loop
+              strategy: take_latest_success
+              map_to: 謝罪リリース#default
+
+  - id: 2_1_4
+    description: |
+      単体approval_gate（not under serial）
+      contentsにserialフロー(ensemble -> generate_team)を指定
+      【シナリオ：新規事業開発】
+      1. アイデア出し(Ensemble): 社員からアイデアを募り、プランナーが選定
+      2. 計画策定(Team): 選ばれたアイデアを事業計画書に落とし込む
+      3. 投資判断(Gate): 投資家がGo/NoGoを判断。Noなら「アイデア出し」からやり直し。
+    source_syntax:
+      approval_gate:
+        approver: Investor
+        target: 事業計画書
+        contents:
+          serial:
+            - ensemble:
+                generators: [EmployeeA, EmployeeB]
+                samples: 1
+                consolidator: Planner
+                inputs: [市場予測:MarketTrend]
+                output: 事業アイデア#Selected
+            - generate_team:
+                generator: BizDev
+                loop: 5
+                inputs: [事業アイデア#Selected]
+                output: 事業計画書
+                validators: [Finance]
+    expansion_ir:
+      # Outer Loop (Approval Gate: Investor)
+      serial:
+        stack_path: root/serial_0
+        children:
+          - loop:
+              stack_path: root/serial_0/loop_0
+              count: 10
+              break_on: success
+              contents:
+                serial:
+                  stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0
+                  children:
+                    - serial:
+                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0
+                        children:
+                          # === Step 1: Ensemble (Idea Generation) ===
+                          # ここでOuter Loop番号(n)のアイデアを確定させる
+                          - serial:
+                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0
+                              children:
+                                - parallel:
+                                    stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0/parallel_0
+                                    children:
+                                      - worker:
+                                          stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0/parallel_0/worker_0
+                                          agent: EmployeeA
+                                          mode: generate
+                                          inputs: 
+                                            - 市場予測:MarketTrend@stable
+                                            # 前回の投資家NG理由を見て、違う切り口を考える
+                                            - 事業計画書__Review_Investor#default/v{$LOOP-1}
+                                            # Self-Reference
+                                            - _事業アイデア#Selected/v{$LOOP-1}/EmployeeA/1
+                                          output: _事業アイデア#Selected/v{$LOOP}/EmployeeA/1
+                                      - worker:
+                                          stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0/parallel_0/worker_1
+                                          agent: EmployeeB
+                                          mode: generate
+                                          inputs: 
+                                            - 市場予測:MarketTrend@stable
+                                            - 事業計画書__Review_Investor#default/v{$LOOP-1}
+                                            # Self-Reference
+                                            - _事業アイデア#Selected/v{$LOOP-1}/EmployeeB/1
+                                          output: _事業アイデア#Selected/v{$LOOP}/EmployeeB/1
+                                - worker:
+                                    stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0/worker_1
+                                    agent: Planner
+                                    mode: generate
+                                    inputs:
+                                      - 市場予測:MarketTrend@stable
+                                      - _事業アイデア#Selected/v{$LOOP}/EmployeeA/1
+                                      - _事業アイデア#Selected/v{$LOOP}/EmployeeB/1
+                                      - 事業計画書__Review_Investor#default/v{$LOOP-1}
+                                      # Self-Reference
+                                      - 事業アイデア#Selected/v{$LOOP-1}
+                                    output: 事業アイデア#Selected/v{$LOOP}
+
+                          # === Step 2: Generate Team ===
+                          - serial:
+                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_1
+                              children:
+                                - loop:
+                                    stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_1/loop_0
+                                    count: 5
+                                    break_on: success
+                                    contents:
+                                      serial:
+                                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_1/loop_0/v{$LOOP}/serial_0
+                                        children:
+                                          - worker:
+                                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_1/loop_0/v{$LOOP}/serial_0/worker_0
+                                              agent: BizDev
+                                              mode: generate
+                                              inputs:
+                                                - 事業アイデア#Selected/v{$LOOP^1}
+                                                # Inner Loop Feedback
+                                                - 事業計画書#default/v{$LOOP^1-1}
+                                                - 事業計画書#default/v{$LOOP^1}/v{$LOOP-1}
+                                                - 事業計画書__Review_Finance#default/v{$LOOP^1}/v{$LOOP-1}
+                                                - 事業計画書__Review_Investor#default/v{$LOOP^1-1}
+                                              output: 事業計画書#default/v{$LOOP^1}/v{$LOOP}
+                                          - parallel:
+                                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_1/loop_0/v{$LOOP}/serial_0/parallel_1
+                                              children:
+                                                - worker:
+                                                    stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_1/loop_0/v{$LOOP}/serial_0/parallel_1/worker_0
+                                                    agent: Finance
+                                                    mode: validate
+                                                    inputs:
+                                                      - 事業アイデア#Selected/v{$LOOP^1}
+                                                      - 事業計画書#default/v{$LOOP^1}/v{$LOOP}
+                                                      - 事業計画書__Review_Investor#default/v{$LOOP^1-1}
+                                                    output: 事業計画書__Review_Finance#default/v{$LOOP^1}/v{$LOOP}
+                                - scope_resolve:
+                                    stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_1/scope_resolve_1
+                                    target: 事業計画書
+                                    from_scope: loop
+                                    strategy: take_latest_success
+                                    map_to: 事業計画書#default/v{$LOOP}
+
+                    # === Step 3: Approval Gate Approver ===
+                    - approver:
+                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/approver_1
+                        agent: Investor
+                        inputs:
+                          # --- 1. Current Target ---
+                          - 事業計画書#default/v{$LOOP}
+                          # --- 2. History Context (Diff & Feedback) ---
+                          - 事業計画書#default/v{$LOOP-1}
+                          - 事業計画書__Review_Investor#default/v{$LOOP-1}
+                          # --- 3. Process Evidence (Audit Trail) ---
+                          - 事業アイデア#Selected/v{$LOOP} #ensembleの経過資料は不要とする
+                          # --- 4. References (External Inputs) ---
+                          - 市場予測:MarketTrend@stable
+
+                        output: 事業計画書__Review_Investor#default/v{$LOOP}
+
+          - scope_resolve:
+              stack_path: root/serial_0/scope_resolve_1
+              target: 事業計画書
+              from_scope: loop
+              strategy: take_latest_success
+              map_to: 事業計画書#default
+
+  - id: 2_1_5
+    description: |
+      単体approval_gate（not under serial）
+      contentsにserialフロー(generate_team -> ensemble)を指定
+      【シナリオ：グローバル・キャンペーン】
+      1. コア戦略策定(Team): 本社マーケ部がコア・メッセージを固める
+      2. クリエイティブ展開(Ensemble): 各国支社がローカライズした広告案を作る
+      3. ブランド審査(Gate): ブランド責任者が全国のクリエイティブを審査。NGなら戦略から見直し。
+    source_syntax:
+      approval_gate:
+        approver: BrandManager
+        target: ローカル広告案
+        contents:
+          serial:
+            - generate_team:
+                generator: HQ_Marketing
+                loop: 3
+                inputs: [今季テーマ:SeasonTheme]
+                output: コア・メッセージ#Fixed
+                validators: [Legal]
+            - ensemble:
+                generators: [Branch_US, Branch_JP]
+                samples: 1
+                consolidator: CampaignLead
+                inputs: [コア・メッセージ#Fixed]
+                output: ローカル広告案
+    expansion_ir:
+      # Outer Loop (Approval Gate: BrandManager)
+      serial:
+        stack_path: root/serial_0
+        children:
+          - loop:
+              stack_path: root/serial_0/loop_0
+              count: 10
+              break_on: success
+              contents:
+                serial:
+                  stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0
+                  children:
+                    - serial:
+                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0
+                        children:
+                          # === Step 1: Generate Team (HQ Marketing) ===
+                          - serial:
+                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0
+                              children:
+                                - loop:
+                                    stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0/loop_0
+                                    count: 3
+                                    break_on: success
+                                    contents:
+                                      serial:
+                                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0/loop_0/v{$LOOP}/serial_0
+                                        children:
+                                          - worker:
+                                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/worker_0
+                                              agent: HQ_Marketing
+                                              mode: generate
+                                              inputs:
+                                                - 今季テーマ:SeasonTheme@stable
+                                                # Inner Loop Feedback
+                                                - コア・メッセージ#Fixed/v{$LOOP^1}/v{$LOOP-1}
+                                                - コア・メッセージ__Review_Legal#Fixed/v{$LOOP^1}/v{$LOOP-1}
+                                                # Outer Gate Feedback (ここに戻ってくる)
+                                                - ローカル広告案__Review_BrandManager#default/v{$LOOP^1-1}
+                                              output: コア・メッセージ#Fixed/v{$LOOP^1}/v{$LOOP}
+                                          - parallel:
+                                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1
+                                              children:
+                                                - worker:
+                                                    stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1/worker_0
+                                                    agent: Legal
+                                                    mode: validate
+                                                    inputs:
+                                                      - 今季テーマ:SeasonTheme@stable
+                                                      - コア・メッセージ#Fixed/v{$LOOP^1}/v{$LOOP}
+                                                      - ローカル広告案__Review_BrandManager#default/v{$LOOP^1-1}
+                                                    output: コア・メッセージ__Review_Legal#Fixed/v{$LOOP^1}/v{$LOOP}
+
+                                - scope_resolve:
+                                    stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_0/scope_resolve_1
+                                    target: コア・メッセージ
+                                    from_scope: loop
+                                    strategy: take_latest_success
+                                    map_to: コア・メッセージ#Fixed/v{$LOOP}
+
+                          # === Step 2: Ensemble (Branch Creative) ===
+                          - serial:
+                              stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_1
+                              children:
+                                - parallel:
+                                    stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_1/parallel_0
+                                    children:
+                                      - worker:
+                                          stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_1/parallel_0/worker_0
+                                          agent: Branch_US
+                                          mode: generate
+                                          inputs:
+                                            - コア・メッセージ#Fixed/v{$LOOP}
+                                            - _ローカル広告案#default/v{$LOOP-1}/Branch_US/1
+                                            - ローカル広告案__Review_BrandManager#default/v{$LOOP-1}
+                                          output: _ローカル広告案#default/v{$LOOP}/Branch_US/1
+                                      - worker:
+                                          stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_1/parallel_0/worker_1
+                                          agent: Branch_JP
+                                          mode: generate
+                                          inputs:
+                                            - コア・メッセージ#Fixed/v{$LOOP}
+                                            - _ローカル広告案#default/v{$LOOP-1}/Branch_JP/1
+                                            - ローカル広告案__Review_BrandManager#default/v{$LOOP-1}
+                                          output: _ローカル広告案#default/v{$LOOP}/Branch_JP/1
+                                  
+                                # Consolidate (Deep Collection)
+                                - worker:
+                                    stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/serial_0/serial_1/worker_1
+                                    agent: CampaignLead
+                                    mode: generate
+                                    inputs:
+                                      - コア・メッセージ#Fixed/v{$LOOP}
+                                      # US, JPの案を自動収集
+                                      - _ローカル広告案#default/v{$LOOP}/Branch_US/1
+                                      - _ローカル広告案#default/v{$LOOP}/Branch_JP/1
+                                      - ローカル広告案#default/v{$LOOP-1}
+                                      - ローカル広告案__Review_BrandManager#default/v{$LOOP-1}
+                                    output: ローカル広告案#default/v{$LOOP}
+
+                    # === Step 3: Approval Gate Approver ===
+                    - approver:
+                        stack_path: root/serial_0/loop_0/v{$LOOP}/serial_0/approver_1
+                        agent: BrandManager
+                        inputs:
+                          # --- 1. Current Target ---
+                          - ローカル広告案#default/v{$LOOP}
+                          # --- 2. History Context (Diff & Feedback) ---
+                          - ローカル広告案#default/v{$LOOP-1}
+                          - ローカル広告案__Review_BrandManager#default/v{$LOOP-1}
+                          # --- 3. Process Evidence (Audit Trail) ---
+                          - コア・メッセージ#Fixed/v{$LOOP}
+                          # --- 4. References (External Inputs) ---
+                          - 今季テーマ:SeasonTheme@stable
+                        output: ローカル広告案__Review_BrandManager#default/v{$LOOP}
+
+          # Outer Loop Resolve
+          - scope_resolve:
+              stack_path: root/serial_0/scope_resolve_1
+              target: ローカル広告案
+              from_scope: loop
+              strategy: take_latest_success
+              map_to: ローカル広告案#default
+
+  - id: 2_2_1
+    description: |
+      単体fan_out（strategy=parallel）
+      contentsに単一worker
+      【シナリオ：会員向けDMの一斉生成】
+      会員リストを読み込み、会員IDをキーとして並列展開する。
+      マーケターは「共通のキャンペーン要項」と「個別の会員情報(@item)」を入力として受け取り、
+      会員ごとのDMドラフトを作成する。
+    source_syntax:
+      fan_out:
+        source: 会員リスト:Members2025
+        item_key: MemberID
+        strategy: parallel
+        contents:
+          worker:
+            agent: Marketer
+            inputs: 
+              - キャンペーン要項:CampRules
+              - 会員情報.__key  # オブジェクト本体の注入指示（明示）
+            output: 個別DMドラフト
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          # 1. Iterator Setup
+          - iterator_init:
+              stack_path: root/serial_0/iterator_init_0
+              source: 会員リスト:Members2025@stable
+              item_key: MemberID     # IDサフィックスの抽出元プロパティ
+
+          # 2. Parallel Execution
+          - iterate:
+              stack_path: root/serial_0/iterate_1
+              strategy: parallel
+              contents:
+                worker:
+                  stack_path: root/serial_0/iterate_1/{$KEY}/worker_0
+                  agent: Marketer
+                  mode: generate
+                  inputs: 
+                    - キャンペーン要項:CampRules@stable
+                    - 会員情報.{$KEY}         # イテレータが指す現在のオブジェクト実体
+                  output: 個別DMドラフト#default/{$KEY} # キーは暗黙的に付与される
+
+  - id: 2_2_2
+    description: |
+      単体fan_out（strategy=parallel）
+      contentsに複数Validatorを持つ単一のgenerate_teamを指定
+      
+      【検証ポイント】
+      1. Parallel Validation: Loop内で複数のValidatorが並列稼働する。
+      2. Multi-Feedback Injection: 
+         GeneratorのInputに、前回の成果物だけでなく、
+         「全てのValidatorのレビュー結果」が自動的に注入されること。
+         ID Format: `Doc__Review_{Agent}#default/{$KEY}/v{$LOOP-1}`
+    source_syntax:
+      fan_out:
+        source: 言語リスト:Languages
+        item_key: LangCode
+        strategy: parallel
+        contents:
+          generate_team:
+            generator: Translator
+            loop: 5
+            inputs: 
+              - 原文テキスト:SourceText
+              - 言語規定.__key # 各国の規制ガイドライン等
+            output: 翻訳テキスト
+            validators: [Linguistic_QA, Legal_Check]
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          # === Step 1: Iterator Setup ===
+          - iterator_init:
+              stack_path: root/serial_0/iterator_init_0
+              source: 言語リスト:Languages@stable
+              item_key: LangCode
+
+          # === Step 2: Parallel Fan-out ===
+          - iterate:
+              stack_path: root/serial_0/iterate_1
+              strategy: parallel
+              contents:
+                # === Inner Logic: Generate Team with Multi-Validators ===
+                serial:
+                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0
+                  children:
+                    - loop:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0
+                        count: 5
+                        break_on: success
+                        contents:
+                          serial:
+                            stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0
+                            children:
+                              # 1. Generator (Translator)
+                              - worker:
+                                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0/worker_0
+                                  agent: Translator
+                                  mode: generate
+                                  inputs:
+                                    - 原文テキスト:SourceText@stable
+                                    - 言語規定.{$KEY}
+                                    # --- Feedback Injection (Previous Loop) ---
+                                    # 前回の自分の成果物
+                                    - 翻訳テキスト#default/{$KEY}/v{$LOOP-1}
+                                    # Validator 1 からの指摘
+                                    - 翻訳テキスト__Review_Linguistic_QA#default/{$KEY}/v{$LOOP-1}
+                                    # Validator 2 からの指摘
+                                    - 翻訳テキスト__Review_Legal_Check#default/{$KEY}/v{$LOOP-1}
+                                  output: 翻訳テキスト#default/{$KEY}/v{$LOOP}
+                              
+                              # 2. Validators (Parallel Execution)
+                              - parallel:
+                                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1
+                                  children:
+                                    # Validator 1
+                                    - worker:
+                                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1/worker_0
+                                        agent: Linguistic_QA
+                                        mode: validate
+                                        inputs:
+                                          - 原文テキスト:SourceText@stable
+                                          - 言語規定.{$KEY}
+                                          - 翻訳テキスト#default/{$KEY}/v{$LOOP}
+                                        output: 翻訳テキスト__Review_Linguistic_QA#default/{$KEY}/v{$LOOP}
+                                    # Validator 2
+                                    - worker:
+                                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1/worker_1
+                                        agent: Legal_Check
+                                        mode: validate
+                                        inputs:
+                                          - 原文テキスト:SourceText@stable
+                                          - 言語規定.{$KEY}
+                                          - 翻訳テキスト#default/{$KEY}/v{$LOOP}
+                                        output: 翻訳テキスト__Review_Legal_Check#default/{$KEY}/v{$LOOP}
+
+                    # === Scope Resolution ===
+                    - scope_resolve:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/scope_resolve_1
+                        target: 翻訳テキスト
+                        from_scope: loop
+                        strategy: take_latest_success
+                        map_to: 翻訳テキスト#default/{$KEY}
+
+  - id: 2_2_3
+    description: |
+      単体fan_out（strategy=parallel）
+      contentsに単一のensembleを指定 (samples=2)
+      
+      【シナリオ：地域別キャッチコピーのコンペ】
+      市場リストに基づき並列展開し、各市場内で「発散(Ensemble)」と「収束(Consolidate)」を行う。
+      
+      検証ポイント:
+      1. ID Stacking: `Output#default/{$KEY}/{Generator}/{Index}`
+         (例: `#US/CopywriterA/1`)
+      2. Scoped Deep Collection: 
+         Consolidatorは、現在のイテレーション({$KEY})に属する発散成果物のみを収集・参照すること。
+    source_syntax:
+      fan_out:
+        source: 市場リスト:Markets
+        item_key: MarketID
+        strategy: parallel
+        contents:
+          ensemble:
+            generators: [CopywriterA, CopywriterB]
+            samples: 2
+            consolidator: Regional_Director
+            inputs: 
+              - 商品仕様:ProductSpec
+              - 調査結果.__key # 各国の市場調査データ
+            output: キャッチコピー案
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          # === Step 1: Iterator Setup ===
+          - iterator_init:
+              stack_path: root/serial_0/iterator_init_0
+              source: 市場リスト:Markets@stable
+              item_key: MarketID
+
+          # === Step 2: Parallel Fan-out ===
+          - iterate:
+              stack_path: root/serial_0/iterate_1
+              strategy: parallel
+              contents:
+                # === Inner Logic: Desugared Ensemble ===
+                serial:
+                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0
+                  children:
+                    # 1. Diverge Step (Parallel Generation)
+                    - parallel:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/parallel_0
+                        children:
+                          # --- CopywriterA (2 samples) ---
+                          - worker:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/parallel_0/worker_0
+                              agent: CopywriterA
+                              mode: generate
+                              inputs:
+                                - 商品仕様:ProductSpec@stable
+                                - 調査結果.{$KEY}
+                              output: _キャッチコピー案#default/{$KEY}/CopywriterA/1
+                          - worker:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/parallel_0/worker_1
+                              agent: CopywriterA
+                              mode: generate
+                              inputs:
+                                - 商品仕様:ProductSpec@stable
+                                - 調査結果.{$KEY}
+                              output: _キャッチコピー案#default/{$KEY}/CopywriterA/2
+                          
+                          # --- CopywriterB (2 samples) ---
+                          - worker:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/parallel_0/worker_2
+                              agent: CopywriterB
+                              mode: generate
+                              inputs:
+                                - 商品仕様:ProductSpec@stable
+                                - 調査結果.{$KEY}
+                              output: _キャッチコピー案#default/{$KEY}/CopywriterB/1
+                          - worker:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/parallel_0/worker_3
+                              agent: CopywriterB
+                              mode: generate
+                              inputs:
+                                - 商品仕様:ProductSpec@stable
+                                - 調査結果.{$KEY}
+                              output: _キャッチコピー案#default/{$KEY}/CopywriterB/2
+
+                    # 2. Converge Step (Consolidation)
+                    - worker:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/worker_1
+                        agent: Regional_Director
+                        mode: generate # Consolidate mode
+                        inputs:
+                          - 商品仕様:ProductSpec@stable
+                          - 調査結果.{$KEY}
+                          # Deep Collection (Scoped to current key)
+                          - _キャッチコピー案#default/{$KEY}/CopywriterA/1
+                          - _キャッチコピー案#default/{$KEY}/CopywriterA/2
+                          - _キャッチコピー案#default/{$KEY}/CopywriterB/1
+                          - _キャッチコピー案#default/{$KEY}/CopywriterB/2
+                        # Final Output for this iteration
+                        output: キャッチコピー案#default/{$KEY}
+
+  - id: 2_2_4
+    description: |
+      単体fan_out（strategy=parallel）
+      contentsにserialフロー(ensemble -> generate_team)を指定
+      ensemble:sample=2
+      generate_team:validators=2名体制
+
+      【シナリオ：地域別・商品開発プロジェクト】
+      1. Ensemble(アイデア発散): 現地プランナー達が地域特性(__key)を踏まえた案を出し、統合して「商品コンセプト」を作る。
+      2. Generate_Team(品質磨き込み): コンセプトを元にエンジニアが設計し、QAと法務が審査する。
+
+      検証ポイント:
+      - ID Propagation: Ensembleの収束結果 `Output#default/{$KEY}` が、後続LoopのInputとして正しく渡るか。
+      - Complex ID Stacking: Loop内でのIDが `Output#default/{$KEY}/v{$LOOP}` となること。
+    source_syntax:
+      fan_out:
+        source: 地域リスト:Regions
+        item_key: RegionID
+        strategy: parallel
+        contents:
+          serial:
+            # Step 1: Idea Generation (Ensemble)
+            - ensemble:
+                generators: [PlannerA, PlannerB]
+                samples: 2
+                consolidator: Director
+                inputs: 
+                  - 市場データ:MarketData
+                  - 地域詳細.__key # 地域データ
+                output: 商品コンセプト
+            
+            # Step 2: Product Design (Generate Team)
+            - generate_team:
+                generator: Engineer
+                loop: 3
+                inputs: 
+                  - 商品コンセプト # Step 1の成果物を受け取る
+                  - 地域詳細.__key
+                output: 試作設計図
+                validators: [QA_Lead, Legal_Advisor]
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          # 1. Iterator Setup
+          - iterator_init:
+              stack_path: root/serial_0/iterator_init_0
+              source: 地域リスト:Regions@stable
+              item_key: RegionID
+
+          # 2. Parallel Fan-out
+          - iterate:
+              stack_path: root/serial_0/iterate_1
+              strategy: parallel
+              contents:
+                serial:
+                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0
+                  children:
+                    # --- Step 1: Ensemble Expansion ---
+                    - serial:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0
+                        children:
+                          # Diverge (2 Generators * 2 Samples)
+                          - parallel:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/parallel_0
+                              children:
+                                - worker:
+                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/parallel_0/worker_0
+                                    agent: PlannerA
+                                    mode: generate
+                                    inputs:
+                                      - 市場データ:MarketData@stable
+                                      - 地域詳細.{$KEY}
+                                    output: _商品コンセプト#default/{$KEY}/PlannerA/1
+                                - worker:
+                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/parallel_0/worker_1
+                                    agent: PlannerA
+                                    mode: generate
+                                    inputs:
+                                      - 市場データ:MarketData@stable
+                                      - 地域詳細.{$KEY}
+                                    output: _商品コンセプト#default/{$KEY}/PlannerA/2
+                                - worker:
+                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/parallel_0/worker_2
+                                    agent: PlannerB
+                                    mode: generate
+                                    inputs:
+                                      - 市場データ:MarketData@stable
+                                      - 地域詳細.{$KEY}
+                                    output: _商品コンセプト#default/{$KEY}/PlannerB/1
+                                - worker:
+                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/parallel_0/worker_3
+                                    agent: PlannerB
+                                    mode: generate
+                                    inputs: 
+                                      - 市場データ:MarketData@stable
+                                      - 地域詳細.{$KEY}
+                                    output: _商品コンセプト#default/{$KEY}/PlannerB/2
+                          # Converge
+                          - worker:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/worker_1
+                              agent: Director
+                              mode: generate
+                              inputs:
+                                - 市場データ:MarketData@stable
+                                - 地域詳細.{$KEY}
+                                # Deep Collection scoped to current Key
+                                - _商品コンセプト#default/{$KEY}/PlannerA/1
+                                - _商品コンセプト#default/{$KEY}/PlannerA/2
+                                - _商品コンセプト#default/{$KEY}/PlannerB/1
+                                - _商品コンセプト#default/{$KEY}/PlannerB/2
+                              output: 商品コンセプト#default/{$KEY}
+
+                    # --- Step 2: Generate Team Expansion ---
+                    - serial:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1
+                        children:
+                          - loop:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/loop_0
+                              count: 3
+                              break_on: success
+                              contents:
+                                serial:
+                                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/loop_0/v{$LOOP}/serial_0
+                                  children:
+                                    # Generator (Engineer)
+                                    - worker:
+                                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/loop_0/v{$LOOP}/serial_0/worker_0
+                                        agent: Engineer
+                                        mode: generate
+                                        inputs:
+                                          # From Ensemble (Resolved ID)
+                                          - 商品コンセプト#default/{$KEY}
+                                          - 地域詳細.{$KEY}
+                                          # Feedback from Loop
+                                          - 試作設計図#default/{$KEY}/v{$LOOP-1}
+                                          - 試作設計図__Review_QA_Lead#default/{$KEY}/v{$LOOP-1}
+                                          - 試作設計図__Review_Legal_Advisor#default/{$KEY}/v{$LOOP-1}
+                                        output: 試作設計図#default/{$KEY}/v{$LOOP}
+                                    
+                                    # Validators (Parallel)
+                                    - parallel:
+                                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/loop_0/v{$LOOP}/serial_0/parallel_1
+                                        children:
+                                          - worker:
+                                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/loop_0/v{$LOOP}/serial_0/parallel_1/worker_0
+                                              agent: QA_Lead
+                                              mode: validate
+                                              inputs: 
+                                                - 商品コンセプト#default/{$KEY}
+                                                - 地域詳細.{$KEY}
+                                                - 試作設計図#default/{$KEY}/v{$LOOP}
+                                              output: 試作設計図__Review_QA_Lead#default/{$KEY}/v{$LOOP}
+                                          - worker:
+                                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/loop_0/v{$LOOP}/serial_0/parallel_1/worker_1
+                                              agent: Legal_Advisor
+                                              mode: validate
+                                              inputs: 
+                                                - 商品コンセプト#default/{$KEY}
+                                                - 地域詳細.{$KEY}
+                                                - 試作設計図#default/{$KEY}/v{$LOOP}
+                                              output: 試作設計図__Review_Legal_Advisor#default/{$KEY}/v{$LOOP}
+                            
+                          # Scope Resolve for Generate Team
+                          - scope_resolve:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/scope_resolve_1
+                              target: 試作設計図
+                              from_scope: loop
+                              strategy: take_latest_success
+                              map_to: 試作設計図#default/{$KEY}
+
+  - id: 2_2_5
+    description: |
+      単体fan_out（strategy=parallel）
+      contentsにserialフロー(generate_team -> ensemble)を指定
+      ensemble:sample=2
+      generate_team:validators=2名体制
+
+      【シナリオ：支社別・広報キャンペーン】
+      1. Generate_Team(コア確立): 支社広報が「プレスリリース」を書き、支社長・法務と推敲して完成させる。
+      2. Ensemble(展開): 完成したリリースを元に、デザイナー達が多様な「SNS用バナー」を作り、選定する。
+
+      検証ポイント:
+      - Scope Exit Resolution: Loop脱出時に `v{$LOOP}` が外れ、`Release#default/{$KEY}` として確定すること。
+      - Input Wiring: Ensembleの各Generatorが、上記で確定したIDを参照できること。
+    source_syntax:
+      fan_out:
+        source: 支社リスト:Branches
+        item_key: BranchID
+        strategy: parallel
+        contents:
+          serial:
+            # Step 1: Core Message (Generate Team)
+            - generate_team:
+                generator: PR_Officer
+                loop: 3
+                inputs: 
+                  - 全社方針:Policy
+                  - 支社情報.__key
+                output: 支社リリース
+                validators: [BranchMgr, Legal]
+            
+            # Step 2: Creative Expansion (Ensemble)
+            - ensemble:
+                generators: [DesignerX, DesignerY]
+                samples: 2
+                consolidator: CreativeDir
+                inputs: 
+                  - 支社リリース # Step 1の確定成果物
+                output: 広告バナー
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          # 1. Iterator Setup
+          - iterator_init:
+              stack_path: root/serial_0/iterator_init_0
+              source: 支社リスト:Branches@stable
+              item_key: BranchID
+
+          # 2. Parallel Fan-out
+          - iterate:
+              stack_path: root/serial_0/iterate_1
+              strategy: parallel
+              contents:
+                serial:
+                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0
+                  children:
+                    # --- Step 1: Generate Team Expansion ---
+                    - serial:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0
+                        children:
+                          - loop:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/loop_0
+                              count: 3
+                              break_on: success
+                              contents:
+                                serial:
+                                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/loop_0/v{$LOOP}/serial_0
+                                  children:
+                                    - worker:
+                                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/worker_0
+                                        agent: PR_Officer
+                                        mode: generate
+                                        inputs:
+                                          - 全社方針:Policy@stable
+                                          - 支社情報.{$KEY}
+                                          - 支社リリース#default/{$KEY}/v{$LOOP-1}
+                                          - 支社リリース__Review_BranchMgr#default/{$KEY}/v{$LOOP-1}
+                                          - 支社リリース__Review_Legal#default/{$KEY}/v{$LOOP-1}
+                                        output: 支社リリース#default/{$KEY}/v{$LOOP}
+                                    - parallel:
+                                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1
+                                        children:
+                                          - worker:
+                                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1/worker_0
+                                              agent: BranchMgr
+                                              mode: validate
+                                              inputs: 
+                                                - 全社方針:Policy@stable
+                                                - 支社情報.{$KEY}
+                                                - 支社リリース#default/{$KEY}/v{$LOOP}
+                                              output: 支社リリース__Review_BranchMgr#default/{$KEY}/v{$LOOP}
+                                          - worker:
+                                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1/worker_1
+                                              agent: Legal
+                                              mode: validate
+                                              inputs: 
+                                                - 全社方針:Policy@stable
+                                                - 支社情報.{$KEY}
+                                                - 支社リリース#default/{$KEY}/v{$LOOP}
+                                              output: 支社リリース__Review_Legal#default/{$KEY}/v{$LOOP}
+                          # Scope Resolve (Loop Exit)
+                          - scope_resolve:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/scope_resolve_1
+                              target: 支社リリース
+                              from_scope: loop
+                              strategy: take_latest_success
+                              map_to: 支社リリース#default/{$KEY}
+
+                    # --- Step 2: Ensemble Expansion ---
+                    - serial:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1
+                        children:
+                          # Diverge
+                          - parallel:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/parallel_0
+                              children:
+                                # DesignerX (2 samples)
+                                - worker:
+                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/parallel_0/worker_0
+                                    agent: DesignerX
+                                    mode: generate
+                                    inputs: 
+                                      - 支社リリース#default/{$KEY}
+                                    output: _広告バナー#default/{$KEY}/DesignerX/1
+                                - worker:
+                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/parallel_0/worker_1
+                                    agent: DesignerX
+                                    mode: generate
+                                    inputs: 
+                                      - 支社リリース#default/{$KEY}
+                                    output: _広告バナー#default/{$KEY}/DesignerX/2
+                                # DesignerY (2 samples)
+                                - worker:
+                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/parallel_0/worker_2
+                                    agent: DesignerY
+                                    mode: generate
+                                    inputs: 
+                                      - 支社リリース#default/{$KEY}
+                                    output: _広告バナー#default/{$KEY}/DesignerY/1
+                                - worker:
+                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/parallel_0/worker_3
+                                    agent: DesignerY
+                                    mode: generate
+                                    inputs: 
+                                      - 支社リリース#default/{$KEY}
+                                    output: _広告バナー#default/{$KEY}/DesignerY/2
+                          # Converge
+                          - worker:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/worker_1
+                              agent: CreativeDir
+                              mode: generate
+                              inputs:
+                                - 支社リリース#default/{$KEY}
+                                # Deep Collection
+                                - _広告バナー#default/{$KEY}/DesignerX/1
+                                - _広告バナー#default/{$KEY}/DesignerX/2
+                                - _広告バナー#default/{$KEY}/DesignerY/1
+                                - _広告バナー#default/{$KEY}/DesignerY/2
+                              output: 広告バナー#default/{$KEY}
+
+  - id: 2_3_1
+    description: |
+      単体fan_out（strategy=serial）
+      contentsにserial（Worker×3）を指定
+      
+      【複合パターンの検証】
+      1. Item Injection: `__key` -> `$KEY` (Worker1のみ使用)
+      2. History Reference: `Doc@history` -> `Doc#{$HISTORY}` (Worker2が使用)
+      3. Chain Reference: `Doc@prev` -> `Doc#{$PREV}` (Worker3が使用)
+      4. Local Reference: 修飾子なし -> 同一イテレーション内の兄を参照 (Worker2が使用)
+      
+      【シナリオ：全国ツアー開催計画】
+      都市ごとに「会場確保」「演出決定」「在庫輸送」を行う。
+      各担当者が必要な情報（文脈）だけを選択的に受け取る複雑な配線を検証する。
+    source_syntax:
+      fan_out:
+        source: 開催都市リスト:Cities
+        item_key: CityCode
+        strategy: serial
+        contents:
+          serial:
+            # 1. 会場手配 (都市データが必要)
+            - worker:
+                agent: Promoter
+                inputs: [都市詳細.__key] # 都市ごとの人口・地形データ
+                output: 会場予約票
+            
+            # 2. 演出構成 (会場情報 ＋ 過去のセトリが必要)
+            - worker:
+                agent: Director
+                inputs: 
+                  - 会場予約票         # 直前のWorker（同一City内）の出力
+                  - セットリスト@history # マンネリ防止のため過去分全部見る
+                output: セットリスト
+            
+            # 3. 物販管理 (前の都市の在庫が必要)
+            - worker:
+                agent: MerchMgr
+                inputs: 
+                  - 在庫管理簿@prev    # バケツリレー（都市データも演出も不要）
+                output: 在庫管理簿
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          # === Step 1: Iterator Setup ===
+          - iterator_init:
+              stack_path: root/serial_0/iterator_init_0
+              source: 開催都市リスト:Cities@stable
+              item_key: CityCode
+
+          # === Step 2: Serial Iteration ===
+          - iterate:
+              stack_path: root/serial_0/iterate_1
+              strategy: serial
+              contents:
+                serial:
+                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0
+                  children:
+                    # Role 1: Promoter
+                    - worker:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/worker_0
+                        agent: Promoter
+                        mode: generate
+                        inputs:
+                          - 都市詳細.{$KEY}               # Explicit Item Binding
+                        output: 会場予約票#default/{$KEY} # Implicit Key Stacking
+
+                    # Role 2: Director
+                    - worker:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/worker_1
+                        agent: Director
+                        mode: generate
+                        inputs:
+                          # Local Reference (Brother in same loop)
+                          - 会場予約票#default/{$KEY} 
+                          # Accumulation Context (All previous keys)
+                          - セットリスト#{$HISTORY}
+                        output: セットリスト#default/{$KEY}
+
+                    # Role 3: MerchMgr
+                    - worker:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/worker_2
+                        agent: MerchMgr
+                        mode: generate
+                        inputs:
+                          # Relay Context (Previous key only)
+                          # ※初回は $PREV=null なので、外部スコープに初期「在庫管理簿」があればそれがバインドされる
+                          - 在庫管理簿#{$PREV}
+                        output: 在庫管理簿#default/{$KEY}
+
+  - id: 2_3_2
+    description: |
+      単体fan_out（strategy=serial）
+      contentsにserial（generate_team -> ensemble -> worker）を指定
+      
+      【複雑性要件への対応】
+      1. Generate_Team: `__key` (Current) と `@history` (Accumulation) を使用。
+      2. Ensemble: `__key` なし。直前のStep1成果物を入力。
+      3. Worker: `@prev` (Relay) を使用。
+      
+      【シナリオ：全社業務改善のリレープロジェクト】
+      「過去の重複回避(History)」「現場での多様な周知(Ensemble)」「全社でのバケツリレー報告(Prev)」を
+      一つのシリアルプロセス内で完結させる。
+    source_syntax:
+      fan_out:
+        source: 支店リスト:Branches
+        item_key: BranchID
+        strategy: serial
+        contents:
+          serial:
+            # Step 1: Improvement Planning (Generate Team)
+            - generate_team:
+                generator: KaizenLead
+                loop: 3
+                inputs: 
+                  - 支店データ.__key
+                  - 改善計画書@history # 過去全支店の計画を見て重複を避ける
+                output: 改善計画書
+                validators: [BranchMgr, HQ_QA] # 2名体制
+            
+            # Step 2: Poster Creation (Ensemble)
+            - ensemble:
+                generators: [StaffA, StaffB]
+                samples: 2
+                consolidator: Leader
+                inputs: 
+                  - 改善計画書 # Step 1の成果物
+                output: 周知ポスター
+            
+            # Step 3: Reporting (Worker)
+            - worker:
+                agent: Admin
+                inputs:
+                  - 周知ポスター
+                  - 進捗リレー報告@prev # 前の支店からのバトン
+                output: 進捗リレー報告
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          # 1. Iterator Setup
+          - iterator_init:
+              stack_path: root/serial_0/iterator_init_0
+              source: 支店リスト:Branches@stable
+              item_key: BranchID
+
+          # 2. Serial Iteration
+          - iterate:
+              stack_path: root/serial_0/iterate_1
+              strategy: serial
+              contents:
+                serial:
+                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0
+                  children:
+                    # --- Step 1: Generate Team (History & Item) ---
+                    - serial:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0
+                        children:
+                          - loop:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/loop_0
+                              count: 3
+                              break_on: success
+                              contents:
+                                serial:
+                                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/loop_0/v{$LOOP}/serial_0
+                                  children:
+                                    - worker:
+                                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/worker_0
+                                        agent: KaizenLead
+                                        mode: generate
+                                        inputs:
+                                          - 支店データ.{$KEY}
+                                          - 改善計画書#{$HISTORY} #解決後の兄リスト
+                                          # Feedback
+                                          - 改善計画書#default/{$KEY}/v{$LOOP-1}
+                                          - 改善計画書__Review_BranchMgr#default/{$KEY}/v{$LOOP-1}
+                                          - 改善計画書__Review_HQ_QA#default/{$KEY}/v{$LOOP-1}
+                                        output: 改善計画書#default/{$KEY}/v{$LOOP}
+                                    - parallel:
+                                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1
+                                        children:
+                                          - worker:
+                                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1/worker_0
+                                              agent: BranchMgr
+                                              mode: validate
+                                              inputs: 
+                                                - 支店データ.{$KEY}
+                                                - 改善計画書#{$HISTORY} #解決後の兄リスト
+                                                - 改善計画書#default/{$KEY}/v{$LOOP} #解決前の検証対象
+                                              output: 改善計画書__Review_BranchMgr#default/{$KEY}/v{$LOOP}
+                                          - worker:
+                                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/loop_0/v{$LOOP}/serial_0/parallel_1/worker_1
+                                              agent: HQ_QA
+                                              mode: validate
+                                              inputs: 
+                                                - 支店データ.{$KEY}
+                                                - 改善計画書#{$HISTORY}
+                                                - 改善計画書#default/{$KEY}/v{$LOOP}
+                                              output: 改善計画書__Review_HQ_QA#default/{$KEY}/v{$LOOP}
+                          - scope_resolve:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/scope_resolve_1
+                              target: 改善計画書
+                              from_scope: loop
+                              strategy: take_latest_success
+                              map_to: 改善計画書#default/{$KEY}
+
+                    # --- Step 2: Ensemble (Internal Input) ---
+                    - serial:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1
+                        children:
+                          - parallel:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/parallel_0
+                              children:
+                                - worker:
+                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/parallel_0/worker_0
+                                    agent: StaffA
+                                    mode: generate
+                                    inputs: 
+                                      - 改善計画書#default/{$KEY}
+                                    output: _周知ポスター#default/{$KEY}/StaffA/1
+                                - worker:
+                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/parallel_0/worker_1
+                                    agent: StaffA
+                                    mode: generate
+                                    inputs: 
+                                      - 改善計画書#default/{$KEY}
+                                    output: _周知ポスター#default/{$KEY}/StaffA/2
+                                - worker:
+                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/parallel_0/worker_2
+                                    agent: StaffB
+                                    mode: generate
+                                    inputs: 
+                                      - 改善計画書#default/{$KEY}
+                                    output: _周知ポスター#default/{$KEY}/StaffB/1
+                                - worker:
+                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/parallel_0/worker_3
+                                    agent: StaffB
+                                    mode: generate
+                                    inputs: 
+                                      - 改善計画書#default/{$KEY}
+                                    output: _周知ポスター#default/{$KEY}/StaffB/2
+                          - worker:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/worker_1
+                              agent: Leader
+                              mode: generate
+                              inputs:
+                                - 改善計画書#default/{$KEY}
+                                # Deep Collection
+                                - _周知ポスター#default/{$KEY}/StaffA/1
+                                - _周知ポスター#default/{$KEY}/StaffA/2
+                                - _周知ポスター#default/{$KEY}/StaffB/1
+                                - _周知ポスター#default/{$KEY}/StaffB/2
+                              output: 周知ポスター#default/{$KEY}
+
+                    # --- Step 3: Worker (Prev Relay) ---
+                    - worker:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/worker_2
+                        agent: Admin
+                        mode: generate
+                        inputs:
+                          - 周知ポスター#default/{$KEY}
+                          - 進捗リレー報告#{$PREV} # Serial Relay
+                        output: 進捗リレー報告#default/{$KEY}
+
+  - id: 2_3_3
+    description: |
+      単体fan_out（strategy=serial）
+      contentsにserial（ensemble -> generate_team -> worker）を指定
+      
+      【シナリオ：長編小説の連載制作】
+      章ごとに「展開のブレスト(Ensemble)」「執筆推敲(Generate)」「設定整合性チェック(Worker)」を行う。
+      
+      複雑な依存関係の検証:
+      1. Item Injection: その章のテーマ(`__key`)を使用。
+      2. Context Chain: 執筆時に「前章の原稿(`@prev`)」を参照し、ストーリーを接続する。
+      3. History Reference: 監修時に「全章の原稿(`@history`)」を参照し、矛盾を検知する。
+    source_syntax:
+      fan_out:
+        source: 章構成リスト:ChapterOutline
+        item_key: ChapterID
+        strategy: serial
+        contents:
+          serial:
+            # Step 1: Plotting (Ensemble)
+            - ensemble:
+                generators: [PlotterA, PlotterB]
+                samples: 2
+                consolidator: MainEditor
+                inputs: 
+                  - 章定義.__key             # 本章のテーマ・起きるべきイベント
+                output: 詳細プロット
+            
+            # Step 2: Writing (Generate Team)
+            - generate_team:
+                generator: Novelist
+                loop: 5
+                inputs: 
+                  - 詳細プロット       # Step 1成果物
+                  - 完成原稿@prev      # 前章のストーリー展開を引き継ぐ
+                output: 完成原稿
+                validators: [MainEditor, Proofreader] # 演出チェックと誤字脱字チェック
+            
+            # Step 3: Lore Checking (Worker)
+            - worker:
+                agent: LoreKeeper
+                inputs:
+                  - 完成原稿           # 今回の原稿
+                  - 完成原稿@history   # 第1章からの全アーカイブ
+                output: 設定整合性レポート
+    expansion_ir:
+      serial:
+        stack_path: root/serial_0
+        children:
+          # 1. Iterator Setup
+          - iterator_init:
+              stack_path: root/serial_0/iterator_init_0
+              source: 章構成リスト:ChapterOutline@stable
+              item_key: ChapterID
+
+          # 2. Serial Iteration (Chapter 1 -> 2 -> 3...)
+          - iterate:
+              stack_path: root/serial_0/iterate_1
+              strategy: serial
+              contents:
+                serial:
+                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0
+                  children:
+                    # --- Step 1: Plotting (Idea Divergence) ---
+                    - serial:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0
+                        children:
+                          - parallel:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/parallel_0
+                              children:
+                                - worker:
+                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/parallel_0/worker_0
+                                    agent: PlotterA
+                                    mode: generate
+                                    inputs: ["章定義.{$KEY}"]
+                                    output: _詳細プロット#default/{$KEY}/PlotterA/1
+                                - worker:
+                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/parallel_0/worker_1
+                                    agent: PlotterA
+                                    mode: generate
+                                    inputs: ["章定義.{$KEY}"]
+                                    output: _詳細プロット#default/{$KEY}/PlotterA/2
+                                - worker:
+                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/parallel_0/worker_2
+                                    agent: PlotterB
+                                    mode: generate
+                                    inputs: ["章定義.{$KEY}"]
+                                    output: _詳細プロット#default/{$KEY}/PlotterB/1
+                                - worker:
+                                    stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/parallel_0/worker_3
+                                    agent: PlotterB
+                                    mode: generate
+                                    inputs: ["章定義.{$KEY}"]
+                                    output: _詳細プロット#default/{$KEY}/PlotterB/2
+                          - worker:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_0/worker_1
+                              agent: MainEditor
+                              mode: generate
+                              inputs:
+                                - 章定義.{$KEY}
+                                # Deep Collection
+                                - _詳細プロット#default/{$KEY}/PlotterA/1
+                                - _詳細プロット#default/{$KEY}/PlotterA/2
+                                - _詳細プロット#default/{$KEY}/PlotterB/1
+                                - _詳細プロット#default/{$KEY}/PlotterB/2
+                              output: 詳細プロット#default/{$KEY}
+
+                    # --- Step 2: Writing (Context Chaining) ---
+                    - serial:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1
+                        children:
+                          - loop:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/loop_0
+                              count: 5
+                              break_on: success
+                              contents:
+                                serial:
+                                  stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/loop_0/v{$LOOP}/serial_0
+                                  children:
+                                    - worker:
+                                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/loop_0/v{$LOOP}/serial_0/worker_0
+                                        agent: Novelist
+                                        mode: generate
+                                        inputs:
+                                          - 詳細プロット#default/{$KEY}
+                                          - 完成原稿#{$PREV} # Previous Chapter
+                                          # Feedback
+                                          - 完成原稿#default/{$KEY}/v{$LOOP-1}
+                                          - 完成原稿__Review_MainEditor#default/{$KEY}/v{$LOOP-1}
+                                          - 完成原稿__Review_Proofreader#default/{$KEY}/v{$LOOP-1}
+                                        output: 完成原稿#default/{$KEY}/v{$LOOP}
+                                    - parallel:
+                                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/loop_0/v{$LOOP}/serial_0/parallel_1
+                                        children:
+                                          - worker:
+                                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/loop_0/v{$LOOP}/serial_0/parallel_1/worker_0
+                                              agent: MainEditor
+                                              mode: validate
+                                              inputs: 
+                                                - 詳細プロット#default/{$KEY}
+                                                - 完成原稿#{$PREV} # Previous Chapter
+                                                - 完成原稿#default/{$KEY}/v{$LOOP}
+                                              output: 完成原稿__Review_MainEditor#default/{$KEY}/v{$LOOP}
+                                          - worker:
+                                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/loop_0/v{$LOOP}/serial_0/parallel_1/worker_1
+                                              agent: Proofreader
+                                              mode: validate
+                                              inputs: 
+                                                - 詳細プロット#default/{$KEY}
+                                                - 完成原稿#{$PREV} # Previous Chapter
+                                                - 完成原稿#default/{$KEY}/v{$LOOP}
+                                              output: 完成原稿__Review_Proofreader#default/{$KEY}/v{$LOOP}
+                          - scope_resolve:
+                              stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/serial_1/scope_resolve_1
+                              target: 完成原稿
+                              from_scope: loop
+                              strategy: take_latest_success
+                              map_to: 完成原稿#default/{$KEY}
+
+                    # --- Step 3: Lore Checking (History Validation) ---
+                    - worker:
+                        stack_path: root/serial_0/iterate_1/{$KEY}/serial_0/worker_2
+                        agent: LoreKeeper
+                        mode: generate
+                        inputs:
+                          - 完成原稿#default/{$KEY}
+                          - 完成原稿#{$HISTORY} # All Chapters
+                        output: 設定整合性レポート#default/{$KEY}

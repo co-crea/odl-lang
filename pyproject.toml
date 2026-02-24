@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "odl-lang"
+version = "0.9.0"
+description = "ODL (Organizational Definition Language) Core Library"
+authors = ["Centillion System, Inc. <odl@centsys.jp>"]
+license = "Apache-2.0"
+readme = "README.md"
+packages = [{include = "odl", from = "src"}]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<4.0"
+pydantic = "^2.0"
+pyyaml = "^6.0"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+
+[tool.pytest.ini_options]
+pythonpath = [
+    "src"
+]
+
+[tool.poetry.urls]
+"Homepage" = "https://centsys.jp/"
+"Repository" = "https://github.com/co-crea/odl-lang"
